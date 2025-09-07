@@ -6,9 +6,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtCore import Qt
 
-# we'll add this file next
 from .queue_model import QueueModel
 from . import playlist
+from .player import Player
 
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 
@@ -17,6 +17,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Sidecar EQ — Preview")
         self.resize(900, 520)
+
+        self.player = Player()
+        self.current_row = None
 
         self.table = QTableView()
         self.model = QueueModel(self)
@@ -31,13 +34,15 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
 
-        actPlay = QAction("Play", self); actPlay.setShortcut(QKeySequence(Qt.Key_Space))
+        actPlay = QAction("Play", self)
+        actPlay.setShortcut(QKeySequence(Qt.Key_Space))
         actPlay.triggered.connect(self.on_play); tb.addAction(actPlay)
 
-        actPause = QAction("Pause", self); actPause.triggered.connect(self.on_pause)
-        tb.addAction(actPause)
+        actStop = QAction("Stop", self)
+        actStop.triggered.connect(self.on_stop); tb.addAction(actStop)
 
-        actNext = QAction("Next", self); actNext.setShortcut("Ctrl+Right")
+        actNext = QAction("Next", self)
+        actNext.setShortcut("Ctrl+Right")
         actNext.triggered.connect(self.on_next); tb.addAction(actNext)
 
         tb.addSeparator()
@@ -49,19 +54,50 @@ class MainWindow(QMainWindow):
         actLoad = QAction("Load", self); actLoad.triggered.connect(self.on_load_playlist); tb.addAction(actLoad)
 
         tb.addSeparator()
-        actRemove = QAction("Remove", self); actRemove.setShortcut(QKeySequence.Delete)
+        actRemove = QAction("Remove", self)
+        actRemove.setShortcut(QKeySequence.Delete)
         actRemove.triggered.connect(self.on_remove_selected); tb.addAction(actRemove)
 
-    # --- stubs for now ---
-    def on_play(self):   self.statusBar().showMessage("Play (stub)")
-    def on_pause(self):  self.statusBar().showMessage("Pause (stub)")
-    def on_next(self):   self.statusBar().showMessage("Next (stub)")
+    # --- Playback helpers ---
+    def _play_row(self, row: int):
+        paths = self.model.paths()
+        if not paths or row is None or row < 0 or row >= len(paths):
+            return
+        self.current_row = row
+        path = paths[row]
+        try:
+            self.player.play(path)
+            self.table.selectRow(row)
+            self.statusBar().showMessage(f"Playing: {Path(path).name}")
+        except Exception as e:
+            QMessageBox.warning(self, "Play error", str(e))
+
+    # --- Toolbar handlers ---
+    def on_play(self):
+        if self.current_row is None:
+            # use selected row if any, else first row
+            sel = self.table.selectionModel().selectedRows()
+            self._play_row(sel[0].row() if sel else 0)
+        else:
+            self._play_row(self.current_row)
+
+    def on_stop(self):
+        self.player.stop()
+        self.statusBar().showMessage("Stopped")
+
+    def on_next(self):
+        if self.current_row is None:
+            self._play_row(0); return
+        self._play_row(self.current_row + 1)
 
     def on_add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Add Audio Files", "",
-                    "Audio Files (*.wav *.flac *.mp3 *.ogg *.m4a)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Add Audio Files", "", "Audio Files (*.wav *.flac *.mp3 *.ogg *.m4a)"
+        )
         if files:
             count = self.model.add_paths(files)
+            if self.current_row is None and count > 0:
+                self.table.selectRow(0)
             self.statusBar().showMessage(f"Added {count} files")
 
     def on_add_folder(self):
@@ -73,6 +109,8 @@ class MainWindow(QMainWindow):
                 if Path(name).suffix.lower() in AUDIO_EXTS:
                     paths.append(os.path.join(root, name))
         count = self.model.add_paths(paths)
+        if self.current_row is None and count > 0:
+            self.table.selectRow(0)
         self.statusBar().showMessage(f"Added {count} files from folder")
 
     def on_remove_selected(self):
@@ -88,8 +126,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved playlist to {out}")
 
     def on_load_playlist(self):
-        inp, _ = QFileDialog.getOpenFileName(self, "Load Playlist (JSON or M3U)", "",
-                                             "Playlists (*.json *.m3u *.m3u8)")
+        inp, _ = QFileDialog.getOpenFileName(self, "Load Playlist (JSON or M3U)", "", "Playlists (*.json *.m3u *.m3u8)")
         if not inp: return
         suffix = Path(inp).suffix.lower()
         if suffix == ".json":
@@ -99,6 +136,8 @@ class MainWindow(QMainWindow):
             paths = [ln for ln in lines if ln and not ln.startswith("#")]
         if paths:
             count = self.model.add_paths(paths)
+            if self.current_row is None and count > 0:
+                self.table.selectRow(0)
             self.statusBar().showMessage(f"Loaded {count} items")
         else:
             QMessageBox.information(self, "Load Playlist", "No paths found in playlist.")
