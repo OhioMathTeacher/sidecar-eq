@@ -2,6 +2,7 @@ from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 from pathlib import Path
 import os
 from . import store
+from .metadata import read_tags
 
 COLUMNS = ["Title", "Artist", "Album", "Play Count", "EQ Profile"]
 
