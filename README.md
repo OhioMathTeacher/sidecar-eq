@@ -1,20 +1,11 @@
 # Sidecar EQ (working title)
 
-A minimalist, queue-first music player that **analyzes tracks on first play** and remembers a **per-track EQ**. Finder-like list view. No bloated library. Playlists are plain files.
+A minimalist, Finder-style player. On first play it analyzes the track, generates a 10-band EQ, blends it with your 7-band preference, and remembers it—so playback matches the music, not the other way around.
 
-## Why
-Global EQ ≠ every track. Sidecar EQ blends **analysis** (librosa/essentia) with your **taste curve** and auto-applies it next time.
-
-## MVP
-- Queue UI (add files/folders, remove, reorder)
-- Playback (pause/skip/volume)
-- First-play analysis → 10-band curve + preamp
-- Per-track store: path, play_count, last_played, eq_profile
-- Save/load playlists (JSON, M3U)
-- Simple 7-band “taste” sliders
-
-## Build
+## Run (dev)
 ```bash
-python -m venv .venv && source .venv/bin/activate  # (Windows: .venv\Scripts\activate)
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 python -m sidecar_eq.app
+```
