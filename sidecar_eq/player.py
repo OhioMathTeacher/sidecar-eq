@@ -2,17 +2,10 @@ from PySide6.QtCore import QObject, Signal, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 
 class Player(QObject):
-    positionChanged      = Signal(object)
-    durationChanged      = Signal(object)
-    mediaStatusChanged   = Signal(object)
-
     def __init__(self):
         super().__init__()
         self._player = QMediaPlayer()
-        self._player.positionChanged.connect(self.positionChanged)
-        self._player.durationChanged.connect(self.durationChanged)
-        self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
-
+        
     def setSource(self, path: str):
         url = QUrl.fromLocalFile(path)
         self._player.setSource(url)
