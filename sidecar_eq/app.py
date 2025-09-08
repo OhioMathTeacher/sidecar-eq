@@ -46,6 +46,20 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         sb.showMessage("Ready")
 
+        # 1) the draggable knob
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setEnabled(False)
+        sb.addPermanentWidget(self.slider)
+
+        # 2) the read-only thermometer bar
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        sb.addPermanentWidget(self.progress)
+
+        # 3) the time label
+        self.timeLabel = QLabel("00:00 / 00:00")
+        sb.addPermanentWidget(self.timeLabel)
+
         # time “knob
         # thermometer-style progress bar
         self.progress = QProgressBar()
@@ -62,6 +76,8 @@ class MainWindow(QMainWindow):
         self.player.mediaStatusChanged.connect(
             lambda st: st == QMediaPlayer.EndOfMedia and self.on_next()
         )
+        self.player.durationChanged.connect(self.progress.setMaximum)
+        self.player.positionChanged.connect(self.progress.setValue)
         # slider drag → seek
         self.slider.sliderMoved.connect(self.player._player.setPosition)
 
