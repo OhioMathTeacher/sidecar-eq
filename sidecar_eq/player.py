@@ -1,10 +1,21 @@
 from PySide6.QtCore import QObject, Signal, QUrl
-from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+
 
 class Player(QObject):
     def __init__(self):
         super().__init__()
+
+        # create a standalone audio output…
+        self._audio_output = QAudioOutput()
+        # …and tell the media player to use it
         self._player = QMediaPlayer()
+        self._player.setAudioOutput(self._audio_output)
+
+        # now your existing signal‐wiring still works:
+        self._player.positionChanged.connect(self.positionChanged)
+        self._player.durationChanged.connect(self.durationChanged)
+        self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
         
     def setSource(self, path: str):
         url = QUrl.fromLocalFile(path)
