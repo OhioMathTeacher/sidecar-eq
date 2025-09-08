@@ -3,6 +3,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
 class Player(QObject):
+    positionChanged = Signal(int)
     def __init__(self):
         super().__init__()
 
