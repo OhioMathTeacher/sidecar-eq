@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
         sb.showMessage("Ready")
 
         # time “knob
-        thermometer‐style progress bar
+        thermometer-style progress bar
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 0)    # 0/0 until we know the duration
