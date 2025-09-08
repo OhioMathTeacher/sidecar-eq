@@ -20,18 +20,22 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Sidecar EQ — Preview")
         self.resize(900, 520)
+
         self._build_toolbar()
-        self.table.doubleClicked.connect(self._on_table_play)
-        # core objects
         self.player = Player()
         self.current_row = None
+
         self._build_queue_table()
+        # now self.table exists, so it’s safe to hook this
+        self.table.doubleClicked.connect(self._on_table_play)
+
         self._build_status_bar()
         self._wire_signals()
 
     def _build_queue_table(self):
         self.table = QTableView()
         self.model = QueueModel(self)
+        self.table.doubleClicked.connect(self._on_table_play)
         self.table.setModel(self.model)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
