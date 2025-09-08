@@ -1,19 +1,17 @@
 from PySide6.QtCore import QObject, Signal, QUrl
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-
 class Player(QObject):
-    positionChanged = Signal(int)
+    # forward QMediaPlayer’s 64-bit positionChanged out
+    positionChanged = Signal("qint64")  
+
     def __init__(self):
         super().__init__()
-
-        # create a standalone audio output…
         self._audio_output = QAudioOutput()
-        # …and tell the media player to use it
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
 
-        # now your existing signal‐wiring still works:
+        # now this will connect cleanly
         self._player.positionChanged.connect(self.positionChanged)
         self._player.durationChanged.connect(self.durationChanged)
         self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
