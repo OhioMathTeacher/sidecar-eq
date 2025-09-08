@@ -53,8 +53,8 @@ class QueueModel(QAbstractTableModel):
         return Qt.MoveAction
 
     def moveRows(self, sourceParent, sourceRow, count, destinationParent, destinationChild):
-        # implement the logic to reorder your underlying data list,
-        # then emit beginMoveRows()/endMoveRows().
+        # TODO: implement bulk‐add of multiple file paths
+        return 0
 
     # --- Helpers ---
     def add_paths(self, paths):
