@@ -23,7 +23,6 @@ class MainWindow(QMainWindow):
         self.resize(900, 520)
 
         self.player = Player()
-        self.player.finished.connect(lambda *args: self.on_next())
         self.current_row = None
 
         self.table = QTableView()
