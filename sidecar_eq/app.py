@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Sidecar EQ — Preview")
         self.resize(900, 520)
+        self._build_toolbar()
 
         # core objects
         self.player = Player()
@@ -45,11 +46,13 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         sb.showMessage("Ready")
 
-        # time “knob”
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setEnabled(False)
-        sb.addPermanentWidget(self.slider)
-
+        # time “knob
+        thermometer‐style progress bar
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setRange(0, 0)    # 0/0 until we know the duration
+        sb.addPermanentWidget(self.progress)
+        
         # time text
         self.timeLabel = QLabel("00:00 / 00:00")
         sb.addPermanentWidget(self.timeLabel)
@@ -67,8 +70,8 @@ class MainWindow(QMainWindow):
         self.player.durationChanged.connect(self._on_duration)
 
         # direct slider binding (so it “thermometers” too)
-        self.player.positionChanged.connect(self.slider.setValue)
-        self.player.durationChanged.connect(self.slider.setMaximum)
+        self.player.positionChanged.connect(self.progress.setValue)
+        self.player.durationChanged.connect(self.progress.setMaximum)
 
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
