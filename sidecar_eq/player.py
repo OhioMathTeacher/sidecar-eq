@@ -10,8 +10,11 @@ class Player(QObject):
         url = QUrl.fromLocalFile(path)
         self._player.setSource(url)
 
-    def play(self):
-        self._player.play()
+    def play(self, path: str):
+    """Load & play a new file in one call."""
+    self.setSource(path)
+    self._player.play()
+
 
     def pause(self):
         self._player.pause()
