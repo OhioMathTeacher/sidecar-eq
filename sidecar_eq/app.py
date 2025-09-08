@@ -22,9 +22,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Sidecar EQ — Preview")
         self.resize(900, 520)
 
+        # core objects
         self.player = Player()
         self.current_row = None
+        self._build_queue_table()
+        self._build_status_bar()
+        self._wire_signals()
 
+    def _build_queue_table(self):
         self.table = QTableView()
         self.model = QueueModel(self)
         self.table.setModel(self.model)
@@ -32,22 +37,36 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.setCentralWidget(self.table)
 
-        header = self.table.horizontalHeader()
-        header.setStretchLastSection(True)
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(True)
         self.table.setAlternatingRowColors(False)
 
-        self._build_toolbar()
-        self.statusBar().showMessage("Ready")
+    def _build_status_bar(self):
+        sb = self.statusBar()
+        sb.showMessage("Ready")
+
+        # time “knob”
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setEnabled(False)
-        self.statusBar().addPermanentWidget(self.slider)
+        sb.addPermanentWidget(self.slider)
+
+        # time text
         self.timeLabel = QLabel("00:00 / 00:00")
-        self.statusBar().addPermanentWidget(self.timeLabel)
+        sb.addPermanentWidget(self.timeLabel)
+
+    def _wire_signals(self):
+        # play-end → next track
+        self.player.mediaStatusChanged.connect(
+            lambda st: st == QMediaPlayer.EndOfMedia and self.on_next()
+        )
+        # slider drag → seek
         self.slider.sliderMoved.connect(self.player._player.setPosition)
-        p = self.player._player
-        p.mediaStatusChanged.connect(lambda status: status == QMediaPlayer.EndOfMedia and self.on_next())
+
+        # position & duration → UI updates
         self.player.positionChanged.connect(self._on_position)
-        self.player.durationChanged.connect(self._on_duration)  
+        self.player.durationChanged.connect(self._on_duration)
+
+        # direct slider binding (so it “thermometers” too)
         self.player.positionChanged.connect(self.slider.setValue)
         self.player.durationChanged.connect(self.slider.setMaximum)
 
