@@ -1,3 +1,4 @@
+import sys
 from PySide6.QtCore import QObject, QProcess, Signal, Qt
 
 class Player(QObject):
