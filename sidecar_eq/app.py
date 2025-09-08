@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSlider, QLabel, QStyle
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 
+
 from .queue_model import QueueModel
 from . import playlist
 from .player import Player
@@ -157,6 +158,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {count} items")
         else:
             QMessageBox.information(self, "Load Playlist", "No paths found in playlist.")
+
+    def _on_duration(self, ms: int):
+        """Called when the track duration is known; set slider range."""
+        self.slider.setRange(0, ms)
+
+    def _on_position(self, ms: int):
+        """Called as playback position changes; update slider + label."""
+        self.slider.setValue(ms)
+        total = self.player._player.duration() or 0
+        # format mm:ss
+        elapsed = f"{ms//60000:02d}:{(ms//1000)%60:02d}"
+        length  = f"{total//60000:02d}:{(total//1000)%60:02d}"
+        self.timeLabel.setText(f"{elapsed} / {length}")
+
 
 def main():
     app = QApplication(sys.argv)
