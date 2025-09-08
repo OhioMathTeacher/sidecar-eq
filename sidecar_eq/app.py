@@ -21,6 +21,7 @@ class MainWindow(QMainWindow):
         self.resize(900, 520)
 
         self.player = Player()
+        self.player.mediaStatusChanged.connect(lambda status: status == QMediaPlayer.EndOfMedia and self.on_next())
         self.player.finished.connect(lambda *args: self.on_next())
         self.current_row = None
 
@@ -37,6 +38,14 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self.statusBar().showMessage("Ready")
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setEnabled(False)
+        self.statusBar().addPermanentWidget(self.slider)
+        self.timeLabel = QLabel("00:00 / 00:00")
+        self.statusBar().addPermanentWidget(self.timeLabel)
+        self.player.positionChanged.connect(self._on_position)
+        self.player.durationChanged.connect(self._on_duration)
+        self.slider.sliderMoved.connect(self.player._player.setPosition)
 
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
