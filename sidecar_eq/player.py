@@ -3,7 +3,9 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 class Player(QObject):
     # forward QMediaPlayer’s 64-bit positionChanged out
-    positionChanged = Signal("qint64")  
+    positionChanged    = Signal("qint64")
+    durationChanged    = Signal("qint64")
+    mediaStatusChanged = Signal(QMediaPlayer.MediaStatus)
 
     def __init__(self):
         super().__init__()
