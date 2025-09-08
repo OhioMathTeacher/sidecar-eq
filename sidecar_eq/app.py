@@ -58,9 +58,9 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.timeLabel)
 
         # time “knob
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        sb.addPermanentWidget(self.progress)
+        # self.progress = QProgressBar()
+        # self.progress.setTextVisible(False)
+        # sb.addPermanentWidget(self.progress)
 
 
     def _wire_signals(self):
