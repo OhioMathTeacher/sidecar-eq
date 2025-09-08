@@ -70,8 +70,6 @@ class MainWindow(QMainWindow):
         )
         self.player.durationChanged.connect(self.progress.setMaximum)
         self.player.positionChanged.connect(self.progress.setValue)
-        # slider drag → seek
-        self.slider.sliderMoved.connect(self.player._player.setPosition)
 
         # position & duration → UI updates
         self.player.positionChanged.connect(self._on_position)
