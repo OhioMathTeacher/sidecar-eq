@@ -45,31 +45,20 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self):
         sb = self.statusBar()
         sb.showMessage("Ready")
-
-        # 1) the draggable knob
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setEnabled(False)
-        sb.addPermanentWidget(self.slider)
-
-        # 2) the read-only thermometer bar
+       
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
+        self.progress.setRange(0, 1)    # 0/0 until we know the duration
         sb.addPermanentWidget(self.progress)
 
-        # 3) the time label
         self.timeLabel = QLabel("00:00 / 00:00")
         sb.addPermanentWidget(self.timeLabel)
 
         # time “knob
-        # thermometer-style progress bar
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
-        self.progress.setRange(0, 0)    # 0/0 until we know the duration
         sb.addPermanentWidget(self.progress)
-        
-        # time text
-        self.timeLabel = QLabel("00:00 / 00:00")
-        sb.addPermanentWidget(self.timeLabel)
+
 
     def _wire_signals(self):
         # play-end → next track
