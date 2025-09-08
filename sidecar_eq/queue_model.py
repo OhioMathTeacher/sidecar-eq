@@ -46,7 +46,15 @@ class QueueModel(QAbstractTableModel):
         return str(section + 1)
 
     def flags(self, index):
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        default = super().flags(index)
+        return default | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
+
+    def supportedDropActions(self):
+        return Qt.MoveAction
+
+    def moveRows(self, sourceParent, sourceRow, count, destinationParent, destinationChild):
+        # implement the logic to reorder your underlying data list,
+        # then emit beginMoveRows()/endMoveRows().
 
     # --- Helpers ---
     def add_paths(self, paths):
