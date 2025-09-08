@@ -1,29 +1,30 @@
-import sys
-from PySide6.QtCore import QObject, QProcess, Signal, Qt
+from PySide6.QtCore import QObject, Signal, QUrl
+from PySide6.QtMultimedia import QMediaPlayer
 
 class Player(QObject):
-    finished = Signal(int, QProcess.ExitStatus)   # arguments match QProcess.finished
+    positionChanged = Signal(int)
+    durationChanged = Signal(int)
+    mediaStatusChanged = Signal(int)  # QMediaPlayer.MediaStatus as int
 
     def __init__(self):
         super().__init__()
-        self.proc = QProcess(self)
-        self.proc.setProcessChannelMode(QProcess.MergedChannels)
-        self.proc.finished.connect(self.finished)
+        self._player = QMediaPlayer()
+        self._player.positionChanged.connect(self.positionChanged)
+        self._player.durationChanged.connect(self.durationChanged)
+        self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
 
-    def play(self, path: str, volume: float | None = None):
-        if sys.platform != "darwin":
-            raise RuntimeError("Playback backend only supports macOS afplay.")
-        args = []
-        if volume is not None:
-            args += ["-v", str(max(0.0, min(1.0, volume)))]
-        args.append(path)
-        self.proc.start("afplay", args)
+    def setSource(self, path: str):
+        url = QUrl.fromLocalFile(path)
+        self._player.setSource(url)
+
+    def play(self):
+        self._player.play()
+
+    def pause(self):
+        self._player.pause()
 
     def stop(self):
-        if self.proc.state() != QProcess.NotRunning:
-            self.proc.kill()
-        self.proc.waitForFinished(1000)
+        self._player.stop()
 
-    def is_playing(self) -> bool:
-        return self.proc.state() == QProcess.Running
-
+    def is_playing(self):
+        return self._player.playbackState() == QMediaPlayer.PlayingState
