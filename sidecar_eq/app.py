@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplicatio
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 from PySide6.QtMultimedia import QMediaPlayer
 
-
 from .queue_model import QueueModel
 from . import playlist
 from .player import Player
@@ -22,7 +21,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Sidecar EQ — Preview")
         self.resize(900, 520)
         self._build_toolbar()
-
+        self.table.doubleClicked.connect(self._on_table_play)
         # core objects
         self.player = Player()
         self.current_row = None
@@ -202,6 +201,13 @@ class MainWindow(QMainWindow):
         length  = f"{total//60000:02d}:{(total//1000)%60:02d}"
         self.timeLabel.setText(f"{elapsed} / {length}")
 
+    def _on_table_play(self, index: QModelIndex):
+        # store current row so metadata updates land in the right place
+        self.current_row = index.row()
+        # get the file path from your model—replace FilePathRole with your actual role
+        path = self.model.data(index, role=QueueModel.FilePathRole)
+        if path:
+            self.player.play(path)
 
 def main():
     app = QApplication(sys.argv)
