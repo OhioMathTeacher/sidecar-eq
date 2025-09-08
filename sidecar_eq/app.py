@@ -46,8 +46,10 @@ class MainWindow(QMainWindow):
         self.slider.sliderMoved.connect(self.player._player.setPosition)
         p = self.player._player
         p.mediaStatusChanged.connect(lambda status: status == QMediaPlayer.EndOfMedia and self.on_next())
-        p.positionChanged.connect(self._on_position)
-        p.durationChanged.connect(self._on_duration)        
+        self.player.positionChanged.connect(self._on_position)
+        self.player.durationChanged.connect(self._on_duration)  
+        self.player.positionChanged.connect(self.slider.setValue)
+        self.player.durationChanged.connect(self.slider.setMaximum)
 
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
