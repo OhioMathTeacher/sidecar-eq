@@ -5,6 +5,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QSlider, QLabel, QStyle
+from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 
 from .queue_model import QueueModel
 from . import playlist
