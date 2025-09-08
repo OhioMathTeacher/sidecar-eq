@@ -4,8 +4,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox
 )
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QSlider, QLabel, QStyle
+from PySide6.QtCore import Qt, QModelIndex
+from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplication
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 from PySide6.QtMultimedia import QMediaPlayer
 
