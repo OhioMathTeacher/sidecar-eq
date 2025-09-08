@@ -28,6 +28,10 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.setCentralWidget(self.table)
 
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(True)
+        self.table.setAlternatingRowColors(False)
+
         self._build_toolbar()
         self.statusBar().showMessage("Ready")
 
