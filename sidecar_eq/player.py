@@ -2,9 +2,9 @@ from PySide6.QtCore import QObject, Signal, QUrl
 from PySide6.QtMultimedia import QMediaPlayer
 
 class Player(QObject):
-    positionChanged = Signal('qlonglong')
-    durationChanged = Signal('qlonglong')
-    mediaStatusChanged = Signal(int)  # QMediaPlayer.MediaStatus as int
+    positionChanged      = Signal(object)
+    durationChanged      = Signal(object)
+    mediaStatusChanged   = Signal(object)
 
     def __init__(self):
         super().__init__()
