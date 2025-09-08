@@ -1,30 +1,28 @@
-# Minimal macOS player using the built-in `afplay` command.
-import subprocess, sys, shutil
+from PySide6.QtCore import QObject, QProcess, Signal, Qt
 
-class Player:
+class Player(QObject):
+    finished = Signal(int, QProcess.ExitStatus)   # arguments match QProcess.finished
+
     def __init__(self):
-        self.proc = None
-        self.ok = sys.platform == "darwin" and shutil.which("afplay") is not None
+        super().__init__()
+        self.proc = QProcess(self)
+        self.proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.proc.finished.connect(self.finished)
 
     def play(self, path: str, volume: float | None = None):
-        if not self.ok:
-            raise RuntimeError("No playback backend available (afplay not found).")
-        self.stop()
-        cmd = ["afplay"]
+        if sys.platform != "darwin":
+            raise RuntimeError("Playback backend only supports macOS afplay.")
+        args = []
         if volume is not None:
-            # 0.0 .. 1.0
-            cmd += ["-v", str(max(0.0, min(1.0, volume)))]
-        cmd += [path]
-        self.proc = subprocess.Popen(cmd)
+            args += ["-v", str(max(0.0, min(1.0, volume)))]
+        args.append(path)
+        self.proc.start("afplay", args)
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=1)
-            except Exception:
-                self.proc.kill()
-        self.proc = None
+        if self.proc.state() != QProcess.NotRunning:
+            self.proc.kill()
+        self.proc.waitForFinished(1000)
 
     def is_playing(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
+        return self.proc.state() == QProcess.Running
+
