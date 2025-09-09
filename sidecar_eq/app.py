@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView
 )
 from PySide6.QtGui import QAction, QKeySequence, QIcon
-from PySide6.QtCore import Qt, QModelIndex
+from PySide6.QtCore import Qt, QModelIndex, QSize
 from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplication, QPushButton
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 from PySide6.QtMultimedia import QMediaPlayer
@@ -14,6 +14,49 @@ from . import playlist
 from .player import Player
 
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
+
+class IconButton(QPushButton):
+    def __init__(self, icon_default, icon_hover, icon_pressed, tooltip="", parent=None):
+        super().__init__(parent)
+        self.icon_default = QIcon(icon_default)
+        self.icon_hover = QIcon(icon_hover)
+        self.icon_pressed = QIcon(icon_pressed)
+        self.setIcon(self.icon_default)
+        self.setIconSize(QSize(32, 32))
+        self.setFlat(True)
+        self.setToolTip(tooltip)
+        self.setFixedSize(40, 40)
+        self._active = False  # Only used for play
+
+    def enterEvent(self, event):
+        if not self._active:
+            self.setIcon(self.icon_hover)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._active:
+            self.setIcon(self.icon_default)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self.setIcon(self.icon_pressed)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # For Play: stay pressed if active, else go to hover/default
+        if self._active:
+            self.setIcon(self.icon_pressed)
+        else:
+            self.setIcon(self.icon_hover)
+        super().mouseReleaseEvent(event)
+
+    def setActive(self, active):
+        """Call this to show Play as 'active' or not."""
+        self._active = active
+        if active:
+            self.setIcon(self.icon_pressed)
+        else:
+            self.setIcon(self.icon_default)
 
 class MainWindow(QMainWindow):
     def __init__(self):
