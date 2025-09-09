@@ -232,14 +232,6 @@ class MainWindow(QMainWindow):
         self._current_duration = f"{mins:02d}:{secs:02d}"
         self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
 
-    def _on_table_play(self, index: QModelIndex):
-        # store current row so metadata updates land in the right place
-        self.current_row = index.row()
-        # get the file path from your model—replace FilePathRole with your actual role
-        path = self.model.data(index, role=QueueModel.FilePathRole)
-        if path:
-            self.player.play(path)
-
     def _on_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
