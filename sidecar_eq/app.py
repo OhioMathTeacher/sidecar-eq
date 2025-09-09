@@ -130,6 +130,8 @@ class MainWindow(QMainWindow):
         self.current_row = row
         path = paths[row]
         try:
+            self.player.play(path)                 # <-- Don't remove this line!
+            self.table.selectRow(row)
             title = self.model.data(self.model.index(row, 0))
             self.statusBar().showMessage(f"Playing: {title}")
         except Exception as e:
