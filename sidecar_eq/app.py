@@ -9,6 +9,9 @@ from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplicatio
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 from PySide6.QtMultimedia import QMediaPlayer
 
+from dotenv import load_dotenv
+from plexapi.server import PlexServer
+
 from .queue_model import QueueModel
 from . import playlist
 from .player import Player
