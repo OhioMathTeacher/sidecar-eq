@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
 
         actStop = QAction(QIcon("icons/stop.svg"), "", self)
         actStop.triggered.connect(self.on_stop); tb.addAction(actStop)
+        
         actNext = QAction(QIcon("icons/next.svg"), "", self)
         actNext.setShortcut("Ctrl+Right")
         actNext.triggered.connect(self.on_next); tb.addAction(actNext)
@@ -111,7 +112,8 @@ class MainWindow(QMainWindow):
         actSave = QAction(QIcon("icons/download.svg"), "", self)
         actSave.triggered.connect(self.on_save_playlist)
         tb.addAction(actSave)
-        actLoad = QAction("Load", self)
+        
+        actLoad = QAction(QIcon("icons/upload.svg"), "", self)
         actLoad.triggered.connect(self.on_load_playlist)
         tb.addAction(actLoad)
 
