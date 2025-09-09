@@ -297,6 +297,31 @@ class MainWindow(QMainWindow):
         ]
         self.model.add_paths(real_files)
 
+    from plex_helpers import get_playlist_titles, get_tracks_for_playlist
+    from PySide6.QtWidgets import QInputDialog
+
+    def import_plex_playlist(self):
+        playlists = get_playlist_titles()  # list of (title, id)
+        if not playlists:
+            QMessageBox.warning(self, "No Playlists", "No Plex playlists found.")
+            return
+
+        playlist_names = [t for t, _ in playlists]
+        name, ok = QInputDialog.getItem(self, "Choose Playlist", "Playlist:", playlist_names, 0, False)
+        if not ok or not name:
+            return
+
+        # Find the ratingKey
+        rating_key = dict(playlists)[name]
+        tracks = get_tracks_for_playlist(rating_key)
+        if not tracks:
+            QMessageBox.warning(self, "Empty Playlist", "Playlist is empty.")
+            return
+
+        # Now add tracks to your queue/table model
+        for track in tracks:
+            self.model.add_track(track)  # You will need to define this method
+
 def main():
     app = QApplication(sys.argv)
     w = MainWindow(); w.show()
