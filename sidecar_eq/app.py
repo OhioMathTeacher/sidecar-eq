@@ -48,7 +48,8 @@ class MainWindow(QMainWindow):
         hdr = self.table.horizontalHeader()
 
         # Make “Title” column stretch
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, self.table.columnWidth(0) + 40)  # Adds 40 pixels of padding
 
         # Optional: Auto-size Artist/Album columns to contents
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
