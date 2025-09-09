@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         ]
         self.model.add_paths(real_files)
 
-    from plex_helpers import get_playlist_titles, get_tracks_for_playlist
+    from sidecar_eq.plex_helpers import get_playlist_titles, get_tracks_for_playlist
     from PySide6.QtWidgets import QInputDialog
 
     def import_plex_playlist(self):
