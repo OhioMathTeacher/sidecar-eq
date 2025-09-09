@@ -144,9 +144,15 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
 
-        actPlay = QAction(QIcon("icons/play.svg"), "", self)
-        actPlay.setShortcut(QKeySequence(Qt.Key_Space))
-        actPlay.triggered.connect(self.on_play); tb.addAction(actPlay)
+        self.play_btn = IconButton(
+            "icons/play.svg",
+            "icons/play_hover.svg",
+            "icons/play_active.svg",
+            tooltip="Play"
+        )
+        self.play_btn.clicked.connect(self.on_play)
+        self.play_btn.setShortcut(QKeySequence(Qt.Key_Space))  # Optional: shortcut support with QPushButton
+        tb.addWidget(self.play_btn)
 
         actStop = QAction(QIcon("icons/stop.svg"), "", self)
         actStop.triggered.connect(self.on_stop); tb.addAction(actStop)
