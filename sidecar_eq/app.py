@@ -1,7 +1,7 @@
 import sys, os
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox
+    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView
 )
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtCore import Qt, QModelIndex
@@ -43,17 +43,23 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.setCentralWidget(self.table)
         self.table.setAlternatingRowColors(False)
+
         from PySide6.QtWidgets import QHeaderView
         hdr = self.table.horizontalHeader()
-        hdr.setStretchLastSection(False)
 
-        # … other header/selection setup …
-        # Make “Play Count” (column 3) a fixed-width column, ~6 digits wide
+        # Make “Title” column stretch
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+
+        # Optional: Auto-size Artist/Album columns to contents
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        # Fix “Play Count” column width
         hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        # use the view’s font metrics to compute 6 “0” characters width
         fm = self.table.fontMetrics()
-        six_zeroes = fm.horizontalAdvance("0" * 15)
+        six_zeroes = fm.horizontalAdvance("0" * 8)  # Try 8 digits unless you expect 100 trillion plays!
         self.table.setColumnWidth(3, six_zeroes)
+
 
     def _build_status_bar(self):
         sb = self.statusBar()
