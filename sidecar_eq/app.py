@@ -42,10 +42,18 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.setCentralWidget(self.table)
-
-        hdr = self.table.horizontalHeader()
-        hdr.setStretchLastSection(True)
         self.table.setAlternatingRowColors(False)
+        from PySide6.QtWidgets import QHeaderView
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+
+        # … other header/selection setup …
+        # Make “Play Count” (column 3) a fixed-width column, ~6 digits wide
+        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
+        # use the view’s font metrics to compute 6 “0” characters width
+        fm = self.table.fontMetrics()
+        six_zeroes = fm.horizontalAdvance("0" * 6)
+        self.table.setColumnWidth(3, six_zeroes)
 
     def _build_status_bar(self):
         sb = self.statusBar()
