@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         tb.addAction(actSave)
         
         actLoad = QAction(QIcon("icons/playlist.svg"), "", self)
-        actLoad.triggered.connect(self.on_load_playlist)
+        actLoad.triggered.connect(self.import_plex_playlist)
         tb.addAction(actLoad)
 
         tb.addSeparator()
