@@ -152,6 +152,8 @@ class MainWindow(QMainWindow):
         paths = []
         for root, _, files in os.walk(folder):
             for name in files:
+                if name.startswith("._"):
+                    continue
                 if Path(name).suffix.lower() in AUDIO_EXTS:
                     paths.append(os.path.join(root, name))
         count = self.model.add_paths(paths)
