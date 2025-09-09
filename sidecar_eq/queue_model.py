@@ -4,12 +4,12 @@ import os
 from . import store
 from .metadata import read_tags
 
-COLUMNS = ["Title", "Artist", "Album", "Play Count", "EQ Profile"]
+COLUMNS = ["Title", "Artist", "Album", "Play Count"]
 
 class QueueModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # each row: {path, title, artist, album, play_count, eq_profile}
+        # each row: {path, title, artist, album, play_count}
         self._rows = []
         self._paths_set = set()
 
@@ -33,9 +33,6 @@ class QueueModel(QAbstractTableModel):
             return row.get("album") or ""
         elif col == 3:
             return str(row.get("play_count", 0))
-        elif col == 4:
-            prof = row.get("eq_profile")
-            return "Yes" if isinstance(prof, dict) else ""
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -69,8 +66,7 @@ class QueueModel(QAbstractTableModel):
                 "title": None,
                 "artist": None,
                 "album": None,
-                "play_count": rec.get("play_count", 0),
-                "eq_profile": rec.get("eq_profile"),
+                "play_count": rec.get("play_count", 0)
             }
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
