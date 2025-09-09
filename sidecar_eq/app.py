@@ -47,20 +47,22 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QHeaderView
         hdr = self.table.horizontalHeader()
 
-        # Make “Title” column stretch
+        # Title column: auto-size to contents, with extra padding
         hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(0, self.table.columnWidth(0) + 40)  # Adds 40 pixels of padding
+        self.table.setColumnWidth(0, 220)  # Set minimum width for Title at startup
 
-        # Optional: Auto-size Artist/Album columns to contents
+        # Artist and Album: auto-size to contents
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
-        # Fix “Play Count” column width
+        # Play Count: fixed width, enough for up to 8 digits
         hdr.setSectionResizeMode(3, QHeaderView.Fixed)
         fm = self.table.fontMetrics()
-        six_zeroes = fm.horizontalAdvance("0" * 8)  # Try 8 digits unless you expect 100 trillion plays!
-        self.table.setColumnWidth(3, six_zeroes)
+        play_count_width = fm.horizontalAdvance("0" * 8)
+        self.table.setColumnWidth(3, play_count_width)
 
+        # Minimum column width for all columns (optional, but helps empty table look better)
+        hdr.setMinimumSectionSize(100)
 
     def _build_status_bar(self):
         sb = self.statusBar()
