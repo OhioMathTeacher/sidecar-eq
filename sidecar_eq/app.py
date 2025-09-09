@@ -186,20 +186,19 @@ class MainWindow(QMainWindow):
 
     # --- Playback helpers ---
     def _play_row(self, row: int):
-    paths = self.model.paths()
-    if not paths or row is None or row < 0 or row >= len(paths):
-        return
-    self.current_row = row
-    path = paths[row]
-    try:
-        self.player.play(path)
-        self.play_btn.setActive(True)  # <--- Add this line!
-        self.table.selectRow(row)
-        title = self.model.data(self.model.index(row, 0))
-        self.statusBar().showMessage(f"Playing: {title}")
-    except Exception as e:
-        QMessageBox.warning(self, "Play error", str(e))
-
+        paths = self.model.paths()
+        if not paths or row is None or row < 0 or row >= len(paths):
+            return
+        self.current_row = row
+        path = paths[row]
+        try:
+            self.player.play(path)
+            self.play_btn.setActive(True)  # <--- Add this line!
+            self.table.selectRow(row)
+            title = self.model.data(self.model.index(row, 0))
+            self.statusBar().showMessage(f"Playing: {title}")
+        except Exception as e:
+            QMessageBox.warning(self, "Play error", str(e))
 
     # --- Toolbar handlers ---
     def on_play(self):
