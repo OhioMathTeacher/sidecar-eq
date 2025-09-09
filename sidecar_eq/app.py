@@ -1,7 +1,7 @@
 import sys, os
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView
+    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView, QInputDialog
 )
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtCore import Qt, QModelIndex, QSize
@@ -12,7 +12,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 
-from sidecar_eq.plex_helpers import get_playlist_titles
+from sidecar_eq.plex_helpers import get_playlist_titles, get_tracks_for_playlist
 
 from .queue_model import QueueModel
 from . import playlist
@@ -301,9 +301,6 @@ class MainWindow(QMainWindow):
             if not os.path.basename(f).startswith("._")
         ]
         self.model.add_paths(real_files)
-
-    from sidecar_eq.plex_helpers import get_playlist_titles, get_tracks_for_playlist
-    from PySide6.QtWidgets import QInputDialog
 
     def import_plex_playlist(self):
         playlists = get_playlist_titles()  # list of (title, id)
