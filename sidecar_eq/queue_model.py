@@ -1,5 +1,6 @@
 from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
 from pathlib import Path
+from mutagen import File as MutagenFile
 import os
 from . import store
 from .metadata import read_tags
@@ -68,6 +69,17 @@ class QueueModel(QAbstractTableModel):
                 "album": None,
                 "play_count": rec.get("play_count", 0)
             }
+            # now try to read tags via mutagen
+            try:
+                mf = MutagenFile(ap, easy=True)
+                if mf:
+                    row["title"]  = mf.get("title",  [Path(ap).stem])[0]
+                    row["artist"] = mf.get("artist", [""])[0]
+                    row["album"]  = mf.get("album",  [""])[0]
+            except Exception:
+                # leave title/artist/album as None if reading fails
+                pass
+            
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
             self._paths_set.add(ap)
