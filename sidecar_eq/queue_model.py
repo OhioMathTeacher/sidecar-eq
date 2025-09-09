@@ -97,3 +97,21 @@ class QueueModel(QAbstractTableModel):
             self._rows.pop(r)
             self._paths_set.discard(ap)
             self.endRemoveRows()
+
+    def add_track(self, track):
+        """Add a single track dict (from Plex or local), expects keys: title, artist, album, stream_url or file."""
+        # Normalize to your internal row format:
+        row = {
+            "path": track.get("file", ""),    # Will be blank for Plex (use stream_url instead)
+            "title": track.get("title", ""),
+            "artist": track.get("artist", ""),
+            "album": track.get("album", ""),
+            "play_count": 0,
+            "stream_url": track.get("stream_url", None),  # This is for Plex tracks
+            "source": track.get("source", "local"),
+        }
+        self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
+        self._rows.append(row)
+        self._paths_set.add(row["path"] or row["stream_url"])
+        self.endInsertRows()
+        return 1
