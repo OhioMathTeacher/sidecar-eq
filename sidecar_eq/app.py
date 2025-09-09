@@ -206,6 +206,20 @@ class MainWindow(QMainWindow):
         if path:
             self.player.play(path)
 
+    def _on_add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Audio Files",
+            "",
+            "Audio Files (*.mp3 *.flac *.ogg *.wav)"
+        )
+        # drop any macOS “._” sidecar files
+        real_files = [
+            f for f in files
+            if not os.path.basename(f).startswith("._")
+        ]
+        self.model.add_paths(real_files)
+
 def main():
     app = QApplication(sys.argv)
     w = MainWindow(); w.show()
