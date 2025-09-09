@@ -30,6 +30,8 @@ class MainWindow(QMainWindow):
         self.table.doubleClicked.connect(self._on_table_play)
 
         self._build_status_bar()
+        self._current_position = "00:00"
+        self._current_duration = "00:00"
         self._wire_signals()
 
     def _build_queue_table(self):
@@ -74,10 +76,6 @@ class MainWindow(QMainWindow):
         # position & duration → UI updates
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
-
-        # direct slider binding (so it “thermometers” too)
-        self.player.positionChanged.connect(self.progress.setValue)
-        self.player.durationChanged.connect(self.progress.setMaximum)
 
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
@@ -190,18 +188,15 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Load Playlist", "No paths found in playlist.")
 
-    def _on_duration(self, ms: int):
-        """Called when the track duration is known; set slider range."""
-        self.slider.setRange(0, ms)
+    def _on_position(self, pos_ms: int):
+        mins, secs = divmod(pos_ms // 1000, 60)
+        self._current_position = f"{mins:02d}:{secs:02d}"
+        self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
 
-    def _on_position(self, ms: int):
-        """Called as playback position changes; update slider + label."""
-        self.slider.setValue(ms)
-        total = self.player._player.duration() or 0
-        # format mm:ss
-        elapsed = f"{ms//60000:02d}:{(ms//1000)%60:02d}"
-        length  = f"{total//60000:02d}:{(total//1000)%60:02d}"
-        self.timeLabel.setText(f"{elapsed} / {length}")
+    def _on_duration(self, dur_ms: int):
+        mins, secs = divmod(dur_ms // 1000, 60)
+        self._current_duration = f"{mins:02d}:{secs:02d}"
+        self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
 
     def _on_table_play(self, index: QModelIndex):
         # store current row so metadata updates land in the right place
