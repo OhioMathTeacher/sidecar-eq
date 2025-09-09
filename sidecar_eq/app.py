@@ -102,7 +102,8 @@ class MainWindow(QMainWindow):
         actAddFiles = QAction(QIcon("icons/addfiles.svg"), "", self)
         actAddFiles.triggered.connect(self.on_add_files)
         tb.addAction(actAddFiles)
-        actAddFolder = QAction("+ Folder", self)
+        
+        actAddFolder = QAction(QIcon("icons/addfolder.svg"), "", self)
         actAddFolder.triggered.connect(self.on_add_folder)
         tb.addAction(actAddFolder)
 
