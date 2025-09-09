@@ -64,6 +64,10 @@ class MainWindow(QMainWindow):
         # Minimum column width for all columns (optional, but helps empty table look better)
         hdr.setMinimumSectionSize(100)
 
+    def _on_table_play(self, index):
+        row = index.row()
+        self._play_row(row)
+
     def _build_status_bar(self):
         sb = self.statusBar()
         sb.showMessage("Ready")
