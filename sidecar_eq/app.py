@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
         actSave.triggered.connect(self.on_save_playlist)
         tb.addAction(actSave)
         
-        actLoad = QAction(QIcon("icons/upload.svg"), "", self)
+        actLoad = QAction(QIcon("icons/playlist.svg"), "", self)
         actLoad.triggered.connect(self.on_load_playlist)
         tb.addAction(actLoad)
 
