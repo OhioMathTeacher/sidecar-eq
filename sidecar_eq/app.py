@@ -12,6 +12,8 @@ from PySide6.QtMultimedia import QMediaPlayer
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 
+from sidecar_eq.plex_helpers import get_playlist_titles
+
 from .queue_model import QueueModel
 from . import playlist
 from .player import Player
