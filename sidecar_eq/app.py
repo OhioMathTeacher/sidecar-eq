@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(3, QHeaderView.Fixed)
         # use the view’s font metrics to compute 6 “0” characters width
         fm = self.table.fontMetrics()
-        six_zeroes = fm.horizontalAdvance("0" * 6)
+        six_zeroes = fm.horizontalAdvance("0" * 15)
         self.table.setColumnWidth(3, six_zeroes)
 
     def _build_status_bar(self):
