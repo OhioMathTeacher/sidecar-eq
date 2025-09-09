@@ -88,27 +88,34 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
 
-        actPlay = QAction("Play", self)
+        actPlay = QAction(QIcon("icons/play.svg"), "", self)
         actPlay.setShortcut(QKeySequence(Qt.Key_Space))
         actPlay.triggered.connect(self.on_play); tb.addAction(actPlay)
 
-        actStop = QAction("Stop", self)
+        actStop = QAction(QIcon("icons/stop.svg"), "", self)
         actStop.triggered.connect(self.on_stop); tb.addAction(actStop)
-
-        actNext = QAction("Next", self)
+        actNext = QAction(QIcon("icons/next.svg"), "", self)
         actNext.setShortcut("Ctrl+Right")
         actNext.triggered.connect(self.on_next); tb.addAction(actNext)
 
         tb.addSeparator()
-        actAddFiles = QAction("+ Files", self); actAddFiles.triggered.connect(self.on_add_files); tb.addAction(actAddFiles)
-        actAddFolder = QAction("+ Folder", self); actAddFolder.triggered.connect(self.on_add_folder); tb.addAction(actAddFolder)
+        actAddFiles = QAction(QIcon("icons/addfiles.svg"), "", self)
+        actAddFiles.triggered.connect(self.on_add_files)
+        tb.addAction(actAddFiles)
+        actAddFolder = QAction("+ Folder", self)
+        actAddFolder.triggered.connect(self.on_add_folder)
+        tb.addAction(actAddFolder)
 
         tb.addSeparator()
-        actSave = QAction("Save", self); actSave.triggered.connect(self.on_save_playlist); tb.addAction(actSave)
-        actLoad = QAction("Load", self); actLoad.triggered.connect(self.on_load_playlist); tb.addAction(actLoad)
+        actSave = QAction(QIcon("icons/download.svg"), "", self)
+        actSave.triggered.connect(self.on_save_playlist)
+        tb.addAction(actSave)
+        actLoad = QAction("Load", self)
+        actLoad.triggered.connect(self.on_load_playlist)
+        tb.addAction(actLoad)
 
         tb.addSeparator()
-        actRemove = QAction("Remove", self)
+        actRemove = QAction(QIcon("icons/trash.svg"), "", self)
         actRemove.setShortcut(QKeySequence.Delete)
         actRemove.triggered.connect(self.on_remove_selected); tb.addAction(actRemove)
 
