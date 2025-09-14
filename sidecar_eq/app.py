@@ -1,26 +1,19 @@
-import sys, os, shutil
+import sys, os
 from pathlib import Path
+import json
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView, QInputDialog
+    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView, QInputDialog, QListWidgetItem, QLabel
 )
 from PySide6.QtGui import QAction, QKeySequence, QIcon
-from PySide6.QtCore import Qt, QModelIndex, QSize
-from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplication, QPushButton
-from PySide6.QtWidgets import QDial
+from PySide6.QtCore import Qt, QModelIndex, QSize, Signal, QTimer
+import math
+from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplication, QPushButton, QDial
+from PySide6.QtWidgets import QSplitter
 from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
 from PySide6.QtMultimedia import QMediaPlayer
 
-# Optional imports: keep app importable when these developer dependencies
-# are not installed in the test environment.
-try:
-    from dotenv import load_dotenv
-except Exception:
-    load_dotenv = None
-
-try:
-    from plexapi.server import PlexServer
-except Exception:
-    PlexServer = None
+from dotenv import load_dotenv
+from plexapi.server import PlexServer
 
 from sidecar_eq.plex_helpers import get_playlist_titles, get_tracks_for_playlist
 
@@ -73,59 +66,115 @@ class IconButton(QPushButton):
         else:
             self.setIcon(self.icon_default)
 
+
+class KnobWidget(QLabel):
+    """A simple image-backed knob that maps vertical drag to 0-100 value.
+
+    Emits valueChanged(int).
+    """
+    valueChanged = Signal(int)
+
+    def __init__(self, image_path: str = None, parent=None):
+        super().__init__(parent)
+        self._value = 100
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(120, 120)
+        self._img = None
+        if image_path:
+            p = Path(image_path)
+            if p.exists():
+                self._img = QIcon(str(p)).pixmap(140, 140)
+                self.setPixmap(self._img)
+
+        # internal drag state
+        self._dragging = False
+        self._last_y = 0
+
+    def setValue(self, v: int):
+        v = max(0, min(100, int(v)))
+        if v != self._value:
+            self._value = v
+            self.valueChanged.emit(self._value)
+
+    def value(self) -> int:
+        return self._value
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._last_y = event.position().y() if hasattr(event, 'position') else event.y()
+            event.accept()
+        # click begins drag for knob; other UI adjustments belong to MainWindow
+
 class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Sidecar EQ — Preview")
-        self.resize(900, 520)
+    """Main application window: builds toolbar, queue table, side panel and wires signals."""
 
-        self._build_toolbar()
-        self.player = Player()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Basic state
         self.current_row = None
-
-        self._build_queue_table()
-        # now self.table exists, so it’s safe to hook this
-        self.table.doubleClicked.connect(self._on_table_play)
-
-        self._build_status_bar()
         self._current_position = "00:00"
         self._current_duration = "00:00"
-        self._wire_signals()
-        # Now that central widget and signals are ready, create the side panel
+
+        # Model / table
         try:
-            self._build_side_panel()
+            self.model = QueueModel()
+            self.table = QTableView()
+            self.table.setModel(self.model)
+            self.table.setSelectionBehavior(QTableView.SelectRows)
+            self.table.setEditTriggers(QTableView.NoEditTriggers)
+            self.table.clicked.connect(self._on_table_play)
+
+            # Make the table the central widget; the side panel is added as a dock
+            self.setCentralWidget(self.table)
+        except Exception:
+            # defensive: ensure attributes exist even if model init fails
+            self.model = None
+            self.table = None
+
+        # Player wrapper
+        try:
+            self.player = Player()
+        except Exception:
+            self.player = None
+
+        # Build UI sections (safe-call)
+        try: self._build_toolbar()
+        except Exception: pass
+        try: self._build_side_panel()
+        except Exception: pass
+        try: self._build_status_bar()
+        except Exception: pass
+
+        # Wire signals last (player and widgets should exist)
+        try: self._wire_signals()
+        except Exception: pass
+
+        self.setWindowTitle('Sidecar EQ')
+        self.resize(1000, 640)
+        # Apply preferred dock sizing after layout settles
+        try:
+            self._apply_dock_sizes()
         except Exception:
             pass
 
-    def _build_queue_table(self):
-        self.table = QTableView()
-        self.model = QueueModel(self)
-        self.table.doubleClicked.connect(self._on_table_play)
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QTableView.SelectRows)
-        self.table.setSelectionMode(QTableView.ExtendedSelection)
-        self.setCentralWidget(self.table)
-        self.table.setAlternatingRowColors(False)
-
-        from PySide6.QtWidgets import QHeaderView
-        hdr = self.table.horizontalHeader()
-
-        # Title column: auto-size to contents, with extra padding
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(0, 220)  # Set minimum width for Title at startup
-
-        # Artist and Album: auto-size to contents
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-
-        # Play Count: fixed width, enough for up to 8 digits
-        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        fm = self.table.fontMetrics()
-        play_count_width = fm.horizontalAdvance("0" * 8)
-        self.table.setColumnWidth(3, play_count_width)
-
-        # Minimum column width for all columns (optional, but helps empty table look better)
-        hdr.setMinimumSectionSize(100)
+    def _apply_dock_sizes(self):
+        """Set the right dock to approximately 35% width (min 320px) and prevent collapse."""
+        from PySide6.QtWidgets import QDockWidget
+        docks = [w for w in self.findChildren(QDockWidget)]
+        if not docks:
+            return
+        right = docks[0]
+        total_w = max(800, self.width())
+        desired = int(max(320, total_w * 0.35))
+        # set a fixed width for the dock's widget
+        try:
+            right.widget().setMinimumWidth(desired)
+            right.widget().setMaximumWidth(desired * 2)
+        except Exception:
+            pass
+        # also ensure it's visible
+        right.show()
 
     def _on_table_play(self, index):
         row = index.row()
@@ -134,26 +183,17 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self):
         sb = self.statusBar()
         sb.showMessage("Ready")
-        # Replace the old gradient/progress look with a darker, flatter
-        # style so toolbar icons pop and the seek slider is obvious.
-        try:
-            self.setStyleSheet("QToolBar { background: #2b2b2b; border: none; }")
-        except Exception:
-            pass
-
-        # seek slider in status bar (draggable; replaces the previous progress bar)
-        self.seek_slider = QSlider()
-        self.seek_slider.setOrientation(Qt.Horizontal)
-        self.seek_slider.setRange(0, 0)
-        self.seek_slider.setFixedWidth(300)
-        sb.addPermanentWidget(self.seek_slider)
-
-        # playback state label (left of timeLabel)
-        self.stateLabel = QLabel("")
-        sb.addPermanentWidget(self.stateLabel)
+       
+    # Replace non-draggable progress bar with a draggable time slider
+        self.timeSlider = QSlider(Qt.Horizontal)
+        self.timeSlider.setRange(0, 0)
+        self.timeSlider.setSingleStep(1000)
+        sb.addPermanentWidget(self.timeSlider)
 
         self.timeLabel = QLabel("00:00 / 00:00")
         sb.addPermanentWidget(self.timeLabel)
+
+        # Dragging should seek — we wire it below in _wire_signals
 
         # time “knob
         # self.progress = QProgressBar()
@@ -166,70 +206,31 @@ class MainWindow(QMainWindow):
         self.player.mediaStatusChanged.connect(
             lambda st: st == QMediaPlayer.EndOfMedia and self.on_next()
         )
-        # prevent UI feedback while user drags
-        self._seeking = False
-
-        def _on_slider_pressed():
-            self._seeking = True
-
-        def _on_slider_released():
-            self._seeking = False
-            pos = int(self.seek_slider.value())
+        # wire duration/position to timeSlider and labels
+        def _on_duration(dur):
             try:
-                self.player.seek(pos)
+                self.timeSlider.setRange(0, int(dur))
             except Exception:
                 pass
+            self._on_duration(dur)
 
-        def _on_slider_moved(val):
-            # update timeLabel preview while dragging
-            mins, secs = divmod(int(val) // 1000, 60)
-            cur = f"{mins:02d}:{secs:02d}"
-            parts = self.timeLabel.text().split("/")
-            dur = parts[1].strip() if len(parts) > 1 else self._current_duration
-            self.timeLabel.setText(f"{cur} / {dur}")
-
-        self.seek_slider.sliderPressed.connect(_on_slider_pressed)
-        self.seek_slider.sliderReleased.connect(_on_slider_released)
-        self.seek_slider.sliderMoved.connect(_on_slider_moved)
-
-        # position & duration → UI updates (avoid updating slider while user drags)
-        self.player.positionChanged.connect(lambda p: (self.seek_slider.setValue(int(p)) if not self._seeking else None))
-        self.player.durationChanged.connect(lambda d: self.seek_slider.setRange(0, int(d) if d else 0))
-        self.player.positionChanged.connect(self._on_position)
-        self.player.durationChanged.connect(self._on_duration)
-
-        # reflect play state in the icon toolbar
-        try:
-            self.player.playingChanged.connect(self.play_btn.setActive)
-        except Exception:
-            pass
-
-        # update textual playback state
-        def _on_playing_changed(is_playing: bool):
-            self.stateLabel.setText("Playing" if is_playing else "Paused")
-
-        def _on_media_status(st):
-            # map common statuses to a short label
+        def _on_position(pos):
             try:
-                if st == QMediaPlayer.EndOfMedia:
-                    self.stateLabel.setText("Stopped")
-                # leave other statuses alone; mediaStatus prints via existing handler
+                # if user is dragging, don't update the slider
+                if not self.timeSlider.isSliderDown():
+                    self.timeSlider.setValue(int(pos))
             except Exception:
                 pass
+            self._on_position(pos)
 
-        try:
-            self.player.playingChanged.connect(_on_playing_changed)
-            self.player.mediaStatusChanged.connect(_on_media_status)
-        except Exception:
-            pass
+        self.player.durationChanged.connect(_on_duration)
+        self.player.positionChanged.connect(_on_position)
+
+        # User seeking via timeSlider → set player position
+        self.timeSlider.sliderMoved.connect(lambda v: self.player.set_position(v))
 
     def _build_toolbar(self):
         tb = QToolBar("Main"); tb.setMovable(False); self.addToolBar(tb)
-        # Make the toolbar darker so icons pop
-        try:
-            tb.setStyleSheet("background: #2b2b2b;")
-        except Exception:
-            pass
 
         self.play_btn = IconButton(
             "icons/play.svg",
@@ -241,96 +242,321 @@ class MainWindow(QMainWindow):
         self.play_btn.setShortcut(QKeySequence(Qt.Key_Space))  # Optional: shortcut support with QPushButton
         tb.addWidget(self.play_btn)
 
-        # Volume dial + numeric readout
-        # small volume icon to the left of the dial to stabilize layout
-        vol_icon = QLabel()
-        vol_icon.setPixmap(QIcon("icons/volume_grey.svg").pixmap(20, 20))
-        tb.addWidget(vol_icon)
-
-        self.volume_dial = QDial()
-        self.volume_dial.setRange(0, 100)
-        self.volume_dial.setValue(100)
-        self.volume_dial.setFixedSize(40, 40)
-        tb.addWidget(self.volume_dial)
-
-        # connect dial changes
-        try:
-            self.volume_dial.valueChanged.connect(self._on_volume_dial_changed)
-        except Exception:
-            pass
-
-        self.volume_label = QLabel("100")
-        # fixed size to avoid toolbar reflow when value changes
-        self.volume_label.setFixedWidth(28)
-        self.volume_label.setAlignment(Qt.AlignCenter)
-        self.volume_label.setStyleSheet("color: #eee;")
-        tb.addWidget(self.volume_label)
-
-        # Mute toggle
-        self.mute_action = QAction(QIcon("icons/mute.svg"), "Mute", self)
-        self.mute_action.setCheckable(True)
-        self.mute_action.triggered.connect(lambda checked: self.player.set_muted(checked))
-        tb.addAction(self.mute_action)
-
-        # reflect player's volume/mute changes in UI
-        try:
-            self.player.volumeChanged.connect(lambda f: self.volume_dial.setValue(int(f * 100)))
-            self.player.volumeChanged.connect(lambda f: self.volume_label.setText(str(int(f * 100))))
-            self.player.mutedChanged.connect(lambda m: self.mute_action.setChecked(bool(m)))
-        except Exception:
-            pass
-
         actStop = QAction(QIcon("icons/stop.svg"), "", self)
         actStop.triggered.connect(self.on_stop); tb.addAction(actStop)
         
-        actNext = QAction(QIcon("icons/next.svg"), "", self)
-        actNext.setShortcut("Ctrl+Right")
-        actNext.triggered.connect(self.on_next); tb.addAction(actNext)
-
-        tb.addSeparator()
-        actAddFiles = QAction(QIcon("icons/addfiles.svg"), "", self)
-        actAddFiles.triggered.connect(self.on_add_files)
-        tb.addAction(actAddFiles)
-        # direct-path play action (enter local path or URL)
-        actOpenPath = QAction(QIcon("icons/link.svg"), "Open Path/URL", self)
-        actOpenPath.triggered.connect(self.on_open_path)
-        tb.addAction(actOpenPath)
-
-    # Use the woodgrain background by default (if present)
-        
-        actAddFolder = QAction(QIcon("icons/addfolder.svg"), "", self)
-        actAddFolder.triggered.connect(self.on_add_folder)
-
-        tb.addAction(actAddFolder)
+    # Removed Next button per UX request (seeking handled via time slider)
 
         tb.addSeparator()
 
-        # Keyboard shortcuts for volume
-        vol_up = QAction("Vol+")
-        vol_up.setShortcut(QKeySequence("Ctrl+="))
-        vol_up.triggered.connect(lambda: self._change_volume_by(5))
-        self.addAction(vol_up)
+        # Single Add button — prefer a provided 'addsongs.jpg' image if the user drops it into icons/
+        # Prefer SVG if present (crisper), then jpg, then fallback
+        # Build an IconButton for Add so hover/pressed states feel the same as Play
+        add_svg = Path('icons/addsongs.svg')
+        add_jpg = Path('icons/addsongs.jpg')
+        from PySide6.QtGui import QPixmap, QPainter, QColor
+        if add_svg.exists():
+            pm = QPixmap(str(add_svg)).scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            hover_svg = Path('icons/addsongs_hover.svg')
+            pressed_svg = Path('icons/addsongs_pressed.svg')
+            if hover_svg.exists():
+                hpm = QPixmap(str(hover_svg)).scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                hpm = QPixmap(pm)
+                p = QPainter(hpm)
+                p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+                p.fillRect(hpm.rect(), QColor(255, 255, 255, 45))
+                p.end()
+            if pressed_svg.exists():
+                ppm = QPixmap(str(pressed_svg)).scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                ppm = QPixmap(pm)
+                p = QPainter(ppm)
+                p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+                p.fillRect(ppm.rect(), QColor(0, 0, 0, 70))
+                p.end()
+            add_btn = IconButton(pm, hpm, ppm, tooltip="Add")
+        elif add_jpg.exists():
+            pm = QPixmap(str(add_jpg)).scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # simple hover/pressed variations
+            hpm = QPixmap(pm)
+            p = QPainter(hpm)
+            p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+            p.fillRect(hpm.rect(), QColor(255, 255, 255, 45))
+            p.end()
+            ppm = QPixmap(pm)
+            p = QPainter(ppm)
+            p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+            p.fillRect(ppm.rect(), QColor(0, 0, 0, 70))
+            p.end()
+            add_btn = IconButton(pm, hpm, ppm, tooltip="Add")
+        else:
+            # fallback to simple icon paths
+            add_btn = IconButton('icons/fileplus_pressed.svg', 'icons/fileplus_hover.svg', 'icons/fileplus_pressed.svg', tooltip='Add')
+        add_btn.clicked.connect(self.on_add_based_on_source)
+        tb.addWidget(add_btn)
 
-        vol_dn = QAction("Vol-")
-        vol_dn.setShortcut(QKeySequence("Ctrl+-"))
-        vol_dn.triggered.connect(lambda: self._change_volume_by(-5))
-        self.addAction(vol_dn)
+        tb.addSeparator()
+        # Download icon will now invoke the Add behavior (download into queue)
+        actDownload = QAction(QIcon("icons/download.svg"), "", self)
+        actDownload.triggered.connect(self.on_add_based_on_source)
+        tb.addAction(actDownload)
 
-        actSave = QAction(QIcon("icons/download.svg"), "", self)
-        actSave.triggered.connect(self.on_save_playlist)
-        tb.addAction(actSave)
-        
-        actLoad = QAction(QIcon("icons/playlist.svg"), "", self)
-        actLoad.triggered.connect(self.import_plex_playlist)
-        tb.addAction(actLoad)
+        # Upload icon will perform the previous save action (upload/save playlist)
+        upload_svg = Path('icons/upload.svg')
+        if upload_svg.exists():
+            upload_icon = QIcon(str(upload_svg))
+        else:
+            # fallback to a neutral icon when upload.svg isn't provided
+            upload_icon = QIcon('icons/fileplus_pressed.svg')
+        actUpload = QAction(upload_icon, "", self)
+        actUpload.triggered.connect(self.on_save_playlist)
+        tb.addAction(actUpload)
+
+        # small label to clarify the purpose of the three icons
+        tb.addWidget(QLabel('Source:'))
+
+        # Source toggle buttons: Local / URL / Plex — moved into toolbar for easier access
+        from PySide6.QtWidgets import QToolButton, QWidget, QHBoxLayout
+        src_row = QWidget()
+        src_layout = QHBoxLayout()
+        src_layout.setContentsMargins(0, 0, 0, 0)
+        src_row.setLayout(src_layout)
+
+        self._src_local = QToolButton()
+        self._src_local.setCheckable(True)
+        self._src_local.setIcon(QIcon('icons/fileplus_hover.svg'))
+        self._src_local.setToolTip('Local Files')
+
+        self._src_url = QToolButton()
+        self._src_url.setCheckable(True)
+        # use addfolder icon to visually distinguish from Local icon
+        self._src_url.setIcon(QIcon('icons/addfolder.svg'))
+        self._src_url.setToolTip('Website URL')
+
+        self._src_plex = QToolButton()
+        self._src_plex.setCheckable(True)
+        self._src_plex.setIcon(QIcon('icons/playlist.svg'))
+        self._src_plex.setToolTip('Plex Server')
+
+        src_layout.addWidget(self._src_local)
+        src_layout.addWidget(self._src_url)
+        src_layout.addWidget(self._src_plex)
+        tb.addWidget(src_row)
+
+        # default selection
+        self._src_local.setChecked(True)
+        self._source_mode = 'Local Files'
+
+        def _set_mode_local():
+            self._src_local.setChecked(True); self._src_url.setChecked(False); self._src_plex.setChecked(False)
+            self._source_mode = 'Local Files'
+
+        def _set_mode_url():
+            self._src_local.setChecked(False); self._src_url.setChecked(True); self._src_plex.setChecked(False)
+            self._source_mode = 'Website URL'
+
+        def _set_mode_plex():
+            self._src_local.setChecked(False); self._src_url.setChecked(False); self._src_plex.setChecked(True)
+            self._source_mode = 'Plex Server'
+
+        self._src_local.clicked.connect(_set_mode_local)
+        self._src_url.clicked.connect(_set_mode_url)
+        self._src_plex.clicked.connect(_set_mode_plex)
+
+    # Playlist import is available via the Plex source toggle — no separate toolbar button
 
         tb.addSeparator()
         actRemove = QAction(QIcon("icons/trash.svg"), "", self)
         actRemove.setShortcut(QKeySequence.Delete)
         actRemove.triggered.connect(self.on_remove_selected); tb.addAction(actRemove)
 
-    # Build right-side analog control panel (created later once central widget exists)
-    # self._build_side_panel() will be called from __init__ after the central widget is set.
+    def _build_side_panel(self):
+        from PySide6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel
+
+        dock = QDockWidget("", self)
+        # hide title bar if we don't want the word "Controls"
+        dock.setTitleBarWidget(QWidget())
+        dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        cont = QWidget()
+        layout = QVBoxLayout()
+
+    # Decorative woodgrain image if present, show small above knob
+        wood = Path("icons/woodgrain.png")
+        if wood.exists():
+            wlbl = QLabel()
+            pix = QIcon(str(wood)).pixmap(120, 120)
+            wlbl.setPixmap(pix)
+            wlbl.setAlignment(Qt.AlignCenter)
+            layout.addWidget(wlbl)
+
+    # 'Volume' label (sans-serif, minimal)
+        vlabel = QLabel("Volume")
+        font = vlabel.font()
+        font.setFamily("Helvetica")
+        font.setPointSize(10)
+        vlabel.setFont(font)
+        vlabel.setAlignment(Qt.AlignCenter)
+        layout.addWidget(vlabel)
+
+        # Knob image-based widget
+        knob = KnobWidget(str(wood) if wood.exists() else None)
+        layout.addWidget(knob, alignment=Qt.AlignCenter)
+
+        # (Source toggles were moved to the toolbar for quick access.)
+        layout.addWidget(QLabel('Source (toolbar)'))
+
+
+        # EQ faders area (10 vertical faders with subtle blue glow)
+        from PySide6.QtWidgets import QHBoxLayout
+        eq_widget = QWidget()
+        eq_layout = QHBoxLayout()
+        eq_layout.setContentsMargins(10, 10, 10, 10)
+        eq_layout.setSpacing(8)
+        eq_widget.setLayout(eq_layout)
+
+        self._eq_sliders = []
+        # base stylesheet template for sliders; {color} will be filled with current glow color
+        slider_css = (
+            "QSlider::groove:vertical {{ background: #111; width: 12px; border-radius:6px; }}"
+            "QSlider::handle:vertical {{ background: {color}; border: 1px solid #666; width: 16px; height: 14px; margin: -6px 0; border-radius:7px; }}"
+        )
+
+        for i in range(10):
+            s = QSlider(Qt.Vertical)
+            s.setRange(-12, 12)
+            s.setValue(0)
+            s.setFixedHeight(180)
+            s.setStyleSheet(slider_css.format(color='rgba(30,150,255,0.50)'))
+            eq_layout.addWidget(s)
+            self._eq_sliders.append(s)
+
+        # create a blurred backdrop and stack the eq_widget on top for a subtle blur
+        from PySide6.QtWidgets import QStackedLayout, QLabel
+        from PySide6.QtGui import QPixmap, QColor
+        from PySide6.QtWidgets import QGraphicsBlurEffect
+
+        stack = QWidget()
+        stack_layout = QStackedLayout()
+        stack.setLayout(stack_layout)
+
+        bg = QLabel()
+        bg_pix = QPixmap(360, 220)
+        bg_pix.fill(QColor(40, 40, 40, 200))
+        bg.setPixmap(bg_pix)
+        blur = QGraphicsBlurEffect()
+        blur.setBlurRadius(10)
+        bg.setGraphicsEffect(blur)
+
+        stack_layout.addWidget(bg)
+        stack_layout.addWidget(eq_widget)
+
+        layout.addWidget(stack)
+
+        # Save EQ button: persist current slider settings per-path
+        save_eq_btn = QPushButton('Save EQ for Track')
+        def _on_save_eq():
+            try:
+                self.save_eq_for_current_track()
+                self.statusBar().showMessage('EQ saved')
+            except Exception as e:
+                QMessageBox.warning(self, 'Save EQ', str(e))
+        save_eq_btn.clicked.connect(_on_save_eq)
+        layout.addWidget(save_eq_btn)
+
+        # Recently played: show last 3 tracks and make them clickable (Title / Artist)
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+        self._recent_table = QTableWidget(0, 2)
+        self._recent_table.setMaximumHeight(120)
+        self._recent_table.setToolTip('Recently played')
+        self._recent_table.setHorizontalHeaderLabels(['Title', 'Artist'])
+        self._recent_table.verticalHeader().setVisible(False)
+        self._recent_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._recent_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._recent_table.setColumnWidth(0, 160)
+        self._recent_table.setColumnWidth(1, 120)
+        layout.addWidget(QLabel('Recently Played'))
+        layout.addWidget(self._recent_table)
+
+        def _on_recent_clicked_table():
+            r = self._recent_table.currentRow()
+            if r < 0:
+                return
+            item = self._recent_table.item(r, 0)
+            if item is None:
+                return
+            path = item.data(Qt.UserRole)
+            if path not in self.model.paths():
+                self.model.add_paths([path])
+            idx = self.model.paths().index(path)
+            self._play_row(idx)
+
+        self._recent_table.cellClicked.connect(lambda r, c: _on_recent_clicked_table())
+
+        # load recent on startup
+        def _load_recent():
+            p = Path.home() / '.sidecar_eq_recent.json'
+            if not p.exists():
+                return []
+            try:
+                data = json.loads(p.read_text())
+                return data.get('recent', [])[:3]
+            except Exception:
+                return []
+
+        def _write_recent(lst):
+            p = Path.home() / '.sidecar_eq_recent.json'
+            data = {'recent': lst[:3]}
+            try:
+                p.write_text(json.dumps(data, indent=2))
+            except Exception:
+                pass
+
+        # populate table now
+        for entry in _load_recent():
+            # entry may be a string path (legacy) or a dict {path,title,artist}
+            if isinstance(entry, str):
+                path = entry
+                title = Path(path).name
+                artist = ''
+            else:
+                path = entry.get('path')
+                title = entry.get('title', Path(path).name)
+                artist = entry.get('artist', '')
+            row = self._recent_table.rowCount()
+            self._recent_table.insertRow(row)
+            ti = QTableWidgetItem(title)
+            ti.setData(Qt.UserRole, path)
+            self._recent_table.setItem(row, 0, ti)
+            self._recent_table.setItem(row, 1, QTableWidgetItem(artist))
+
+        # start a timer to animate glow (oscillate alpha)
+        self._eq_phase = 0.0
+        def _update_eq_glow():
+            self._eq_phase += 0.18
+            alpha = (math.sin(self._eq_phase) + 1) / 2 * 0.55 + 0.2  # 0.2..0.75
+            color = f'rgba(30,150,255,{alpha:.3f})'
+            css = slider_css.format(color=color)
+            for sl in self._eq_sliders:
+                sl.setStyleSheet(css)
+
+        self._eq_timer = QTimer(self)
+        self._eq_timer.timeout.connect(_update_eq_glow)
+        self._eq_timer.start(90)
+
+        cont.setLayout(layout)
+        dock.setWidget(cont)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        # Wire knob to player.set_volume when available (safe check)
+        def _on_knob(val):
+            try:
+                if hasattr(self.player, 'set_volume'):
+                    self.player.set_volume(val / 100.0)
+            except Exception:
+                pass
+
+        knob.valueChanged.connect(_on_knob)
 
     # --- Playback helpers ---
     def _play_row(self, row: int):
@@ -345,227 +571,38 @@ class MainWindow(QMainWindow):
             self.table.selectRow(row)
             title = self.model.data(self.model.index(row, 0))
             self.statusBar().showMessage(f"Playing: {title}")
-        except Exception as e:
-            QMessageBox.warning(self, "Play error", str(e))
-
-    def _build_side_panel(self):
-        """Create a right-docked woodgrain-style control panel with large dials.
-
-        This panel contains Volume, Bass, and Treble QDials (UI-only for bass/treble)
-        and a retro numeric display for the current volume. The Volume dial is
-        kept in sync with the toolbar volume dial and the Player via signals.
-        """
-        from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout
-        from PySide6.QtWidgets import QSizePolicy
-
-        self.side_panel = QFrame()
-        self.side_panel.setObjectName("sidePanel")
-        self.side_panel.setFixedWidth(340)
-        # Prefer a woodgrain image if available, otherwise use a warm gradient
-        wood_path = os.path.join(os.path.dirname(__file__), '..', 'icons', 'woodgrain.png')
-        if os.path.exists(os.path.normpath(wood_path)):
-            # Use CSS to set a background image (repeat) and add a semi-opaque overlay for contrast
-            # Use absolute path to avoid issues with relative CSS resolution
-            abspath = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'icons', 'woodgrain.png'))
-            self.side_panel.setStyleSheet(
-                f"#sidePanel {{ background-image: url(file://{abspath}); background-repeat: repeat; background-position: center; background-attachment: scroll; border-left: 2px solid #3b2b1a; }}"
-            )
-        else:
-            self.side_panel.setStyleSheet(
-                "#sidePanel { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #6b3f1e, stop:0.3 #8b5a2b, stop:0.6 #a66f3a, stop:1 #6b3f1e); border-left: 2px solid #3b2b1a; }"
-            )
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
-
-        # 7-segment style numeric display using QLCDNumber
-        from PySide6.QtWidgets import QLCDNumber
-        self.retro_display = QLCDNumber()
-        self.retro_display.setDigitCount(3)
-        self.retro_display.setSegmentStyle(QLCDNumber.Filled)
-        self.retro_display.display(self.volume_dial.value())
-        self.retro_display.setStyleSheet("background: #200b00; color: #ffb86b; border-radius: 6px;")
-        self.retro_display.setFixedHeight(64)
-        layout.addWidget(self.retro_display)
-        try:
-            from PySide6.QtWidgets import QGraphicsDropShadowEffect
-            from PySide6.QtGui import QColor
-            glow = QGraphicsDropShadowEffect(self.retro_display)
-            glow.setBlurRadius(24)
-            glow.setOffset(0, 0)
-            glow.setColor(QColor(255, 184, 107, 200))
-            self.retro_display.setGraphicsEffect(glow)
-        except Exception:
-            pass
-
-        # Large dials row with circular bezels and shadows
-        dial_row = QHBoxLayout()
-
-        from PySide6.QtWidgets import QFrame, QVBoxLayout
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        from PySide6.QtGui import QColor
-
-        # Helper to create a bezel frame that holds a dial
-        def _bezel_with_dial(dial: QDial, size: int):
-            frame = QFrame()
-            frame.setFixedSize(size + 28, size + 28)
-            frame.setStyleSheet(
-                "background: qradialgradient(cx:0.5, cy:0.4, radius:1.0, stop:0 #e9d6bd, stop:0.6 #c89b6a, stop:1 #7a4b24);"
-                "border-radius: %dpx; border: 2px solid #5a3b22;"
-                % ((size + 28) // 2)
-            )
-            v = QVBoxLayout()
-            v.setContentsMargins(8, 8, 8, 8)
-            v.addWidget(dial, alignment=Qt.AlignCenter)
-            frame.setLayout(v)
-            # shadow
-            effect = QGraphicsDropShadowEffect()
-            effect.setBlurRadius(30)
-            effect.setOffset(0, 6)
-            effect.setColor(QColor(0, 0, 0, 160))
-            frame.setGraphicsEffect(effect)
-            return frame
-
-        self.side_vol_dial = QDial()
-        self.side_vol_dial.setRange(0, 100)
-        self.side_vol_dial.setValue(self.volume_dial.value())
-        self.side_vol_dial.setNotchesVisible(True)
-        self.side_vol_dial.setFixedSize(160, 160)
-        dial_row.addWidget(_bezel_with_dial(self.side_vol_dial, 160))
-
-        self.side_bass_dial = QDial()
-        self.side_bass_dial.setRange(-12, 12)
-        self.side_bass_dial.setValue(0)
-        self.side_bass_dial.setFixedSize(120, 120)
-        dial_row.addWidget(_bezel_with_dial(self.side_bass_dial, 120))
-
-        self.side_treble_dial = QDial()
-        self.side_treble_dial.setRange(-12, 12)
-        self.side_treble_dial.setValue(0)
-        self.side_treble_dial.setFixedSize(120, 120)
-        dial_row.addWidget(_bezel_with_dial(self.side_treble_dial, 120))
-
-        layout.addLayout(dial_row)
-
-        # Labels under dials
-        lbl_row = QHBoxLayout()
-        lbl_row.addWidget(QLabel("Volume"))
-        lbl_row.addWidget(QLabel("Bass"))
-        lbl_row.addWidget(QLabel("Treble"))
-        layout.addLayout(lbl_row)
-
-        # Placeholder buttons for repeat/loudness/mute (non-blocking)
-        btn_row = QHBoxLayout()
-        from PySide6.QtWidgets import QPushButton
-        self.btn_repeat = QPushButton("Repeat")
-        self.btn_loud = QPushButton("Loud")
-        self.btn_mini_mute = QPushButton("Mute")
-        # style buttons to fit the vintage panel
-        for b in (self.btn_repeat, self.btn_loud, self.btn_mini_mute):
-            b.setStyleSheet("background: rgba(255,255,255,0.08); color: #fff; border: 1px solid #6b4a2b; padding: 6px; border-radius: 4px;")
-        btn_row.addWidget(self.btn_repeat)
-        btn_row.addWidget(self.btn_loud)
-        btn_row.addWidget(self.btn_mini_mute)
-        layout.addLayout(btn_row)
-
-        self.side_panel.setLayout(layout)
-
-        # Add an overlay widget on top of the side panel for contrast (semi-opaque)
-        overlay = QLabel(self.side_panel)
-        overlay.setObjectName("sideOverlay")
-        overlay.setStyleSheet("background: rgba(0,0,0,0.25); border: none;")
-        overlay.setGeometry(0, 0, self.side_panel.width(), self.side_panel.height())
-        overlay.lower()  # put under the controls we add later
-
-        # Add the side panel as a dock-like widget on the right by using a layout
-        # around the central widget: make a container widget to hold table + panel
-        try:
-            central = self.centralWidget()
-            from PySide6.QtWidgets import QWidget, QHBoxLayout
-            container = QWidget()
-            h = QHBoxLayout()
-            h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(0)
-            h.addWidget(central)
-            h.addWidget(self.side_panel)
-            container.setLayout(h)
-            self.setCentralWidget(container)
-        except Exception:
-            # If central widget is not ready, ignore — caller may add later
-            pass
-
-        # Wire volume sync: toolbar dial <-> side dial -> player
-        def _side_to_toolbar(val: int):
-            # update toolbar dial without triggering recursive calls
-            if self.volume_dial.value() != val:
-                self.volume_dial.blockSignals(True)
-                self.volume_dial.setValue(val)
-                self.volume_dial.blockSignals(False)
-            # update retro display and tell the player
+            # attempt to load EQ for this track if present
             try:
-                self.retro_display.display(int(val))
-            except Exception:
-                # fallback for older widget types
-                try:
-                    self.retro_display.setText(str(val)
-                    )
-                except Exception:
-                    pass
-            try:
-                self.player.set_volume(float(val) / 100.0)
+                self.load_eq_for_track(path)
             except Exception:
                 pass
-
-        def _toolbar_to_side(val: int):
-            if self.side_vol_dial.value() != val:
-                self.side_vol_dial.blockSignals(True)
-                self.side_vol_dial.setValue(val)
-                self.side_vol_dial.blockSignals(False)
+            # update recent list (persist to file)
             try:
-                self.retro_display.display(int(val))
+                p = Path.home() / '.sidecar_eq_recent.json'
+                recent = []
+                if p.exists():
+                    try:
+                        recent = json.loads(p.read_text()).get('recent', [])
+                    except Exception:
+                        recent = []
+                # move path to front
+                if path in recent:
+                    recent.remove(path)
+                recent.insert(0, path)
+                # keep up to 3
+                recent = recent[:3]
+                p.write_text(json.dumps({'recent': recent}, indent=2))
+                # refresh UI list
+                if hasattr(self, '_recent_list'):
+                    self._recent_list.clear()
+                    for rp in recent:
+                        it = QListWidgetItem(Path(rp).name)
+                        it.setData(Qt.UserRole, rp)
+                        self._recent_list.addItem(it)
             except Exception:
-                try:
-                    self.retro_display.setText(str(val))
-                except Exception:
-                    pass
-
-        try:
-            self.side_vol_dial.valueChanged.connect(_side_to_toolbar)
-            self.volume_dial.valueChanged.connect(_toolbar_to_side)
-            # initialize display
-            self.retro_display.display(self.volume_dial.value())
-        except Exception:
-            pass
-
-        # Wire bass/treble dials to player (UI-only EQ)
-        try:
-            self.side_bass_dial.valueChanged.connect(lambda v: self.player.set_bass(int(v)))
-            self.side_treble_dial.valueChanged.connect(lambda v: self.player.set_treble(int(v)))
-            # optional: reflect player-side changes back to UI if other code modifies them
-            self.player.bassChanged.connect(lambda db: self.side_bass_dial.setValue(int(db)))
-            self.player.trebleChanged.connect(lambda db: self.side_treble_dial.setValue(int(db)))
-        except Exception:
-            pass
-
-    # --- Volume helpers ---
-    def _on_volume_dial_changed(self, val: int):
-        # dial gives 0..100; player expects 0.0..1.0
-        f = float(val) / 100.0
-        try:
-            self.player.set_volume(f)
-        except Exception:
-            pass
-        # update numeric readout in toolbar
-        try:
-            self.volume_label.setText(str(val))
-        except Exception:
-            pass
-
-    def _change_volume_by(self, delta: int):
-        v = max(0, min(100, self.volume_dial.value() + delta))
-        self.volume_dial.setValue(v)
-        self._on_volume_dial_changed(v)
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Play error", str(e))
 
     # --- Toolbar handlers ---
     def on_play(self):
@@ -585,6 +622,21 @@ class MainWindow(QMainWindow):
         if self.current_row is None:
             self._play_row(0); return
         self._play_row(self.current_row + 1)
+
+    def on_add_based_on_source(self):
+        # Use the toolbar source toggles to decide behavior
+        choice = getattr(self, '_source_mode', 'Local Files')
+        if choice == 'Local Files':
+            return self.on_add_files()
+        elif choice == 'Website URL':
+            url, ok = QInputDialog.getText(self, 'Add URL', 'Enter audio URL:')
+            if ok and url:
+                # For now, just add the URL as a path — callers must handle network playback
+                self.model.add_paths([url])
+                self.statusBar().showMessage('Added URL')
+        elif choice == 'Plex Server':
+            # Reuse existing playlist import UX
+            return self.import_plex_playlist()
 
     def on_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -610,48 +662,6 @@ class MainWindow(QMainWindow):
         if self.current_row is None and count > 0:
             self.table.selectRow(0)
         self.statusBar().showMessage(f"Added {count} files from folder")
-
-    def on_set_panel_background(self):
-        """Open a file dialog, copy the chosen image into icons/panel_background.png
-        and update the side panel stylesheet live."""
-        # No-op: panel background is hardcoded to woodgrain for now.
-        return
-
-    def on_open_path(self):
-        """Prompt the user for a local path or URL and play it directly."""
-        text, ok = QInputDialog.getText(self, "Open Path or URL", "Path or URL:")
-        if not ok or not text:
-            return
-        p = text.strip().replace("\\ ", " ")
-        p = os.path.expanduser(p)
-        p = os.path.normpath(p)
-
-        # If this is a local file, add to queue (if not already present)
-        try:
-            if os.path.exists(p):
-                # add_paths returns number added; if zero it was duplicate
-                _ = self.model.add_paths([p])
-                # find the row index for the path and select it
-                try:
-                    idx = self.model.paths().index(os.path.abspath(p))
-                except ValueError:
-                    idx = None
-                if idx is not None:
-                    self.current_row = idx
-                    self.table.selectRow(idx)
-                # play the added file
-                self.player.play(p)
-                self.play_btn.setActive(True)
-                self.statusBar().showMessage(f"Playing: {os.path.basename(p)}")
-                return
-            else:
-                # Not a local file — treat as URL and attempt to play directly
-                self.player.play(p)
-                self.play_btn.setActive(True)
-                self.statusBar().showMessage(f"Playing: {p}")
-                return
-        except Exception as e:
-            QMessageBox.warning(self, "Play error", str(e))
 
     def on_remove_selected(self):
         sel = self.table.selectionModel().selectedRows()
@@ -691,6 +701,43 @@ class MainWindow(QMainWindow):
         mins, secs = divmod(dur_ms // 1000, 60)
         self._current_duration = f"{mins:02d}:{secs:02d}"
         self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
+
+    # --- EQ persistence helpers ---
+    def _eq_store_path(self):
+        return Path.home() / '.sidecar_eq_eqs.json'
+
+    def save_eq_for_current_track(self):
+        # Save current EQ slider values keyed by current track path
+        if self.current_row is None:
+            raise RuntimeError('No current track to save EQ for')
+        paths = self.model.paths()
+        if not paths or self.current_row >= len(paths):
+            raise RuntimeError('Invalid current row')
+        key = paths[self.current_row]
+        vals = [int(s.value()) for s in getattr(self, '_eq_sliders', [])]
+        p = self._eq_store_path()
+        data = {}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text())
+            except Exception:
+                data = {}
+        data[key] = vals
+        p.write_text(json.dumps(data, indent=2))
+
+    def load_eq_for_track(self, path):
+        p = self._eq_store_path()
+        if not p.exists():
+            return
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            return
+        vals = data.get(path)
+        if not vals:
+            return
+        for s, v in zip(getattr(self, '_eq_sliders', []), vals):
+            s.setValue(int(v))
 
     def _on_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
