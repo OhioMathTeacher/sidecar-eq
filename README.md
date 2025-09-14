@@ -9,3 +9,5 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 python -m sidecar_eq.app
 ```
+_Synced on Mac mini at 00:11 UTC_  
+
