@@ -1,6 +1,9 @@
 # Offline-only tag reader: mutagen first, then filename/path guesses.
 import os, re
-from mutagen import File
+try:
+    from mutagen import File
+except Exception:
+    File = None
 
 def _first(v):
     return (v[0] if isinstance(v, list) and v else v) or None
@@ -44,14 +47,15 @@ def read_tags(path: str) -> dict:
     tags = {"title": None, "artist": None, "album": None}
 
     # 1) Embedded tags (works for mp3/flac/m4a/ogg/etc.)
-    try:
-        audio = File(path, easy=True)
-        if audio and getattr(audio, "tags", None):
-            tags["title"]  = _first(audio.tags.get("title"))
-            tags["artist"] = _first(audio.tags.get("artist"))
-            tags["album"]  = _first(audio.tags.get("album"))
-    except Exception:
-        pass
+    if File:
+        try:
+            audio = File(path, easy=True)
+            if audio and getattr(audio, "tags", None):
+                tags["title"]  = _first(audio.tags.get("title"))
+                tags["artist"] = _first(audio.tags.get("artist"))
+                tags["album"]  = _first(audio.tags.get("album"))
+        except Exception:
+            pass
 
     # 2) Filename guess
     if not tags["title"]:

@@ -1,6 +1,6 @@
 [project]
 name = "sidecar-eq"
-version = "0.1.0"
+version = "0.2a0"
 description = "Queue-first player with per-track EQ via analysis + taste curve."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,3 +16,9 @@ dependencies = [
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sidecar_eq"]
+
+[project.optional-dependencies]
+yt = ["yt-dlp"]
