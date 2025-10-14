@@ -1,424 +1,113 @@
-import sys, os
-from pathlib import Path
-import json
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTableView, QFileDialog, QToolBar, QMessageBox, QHeaderView, QInputDialog, QListWidgetItem, QLabel, QWidget
-)
-from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap, QPainter, QKeyEvent
-from PySide6.QtCore import Qt, QModelIndex, QSize, Signal, QTimer, QObject, QDateTime, QThread
-import math
-from PySide6.QtWidgets import QSlider, QLabel, QStyle, QProgressBar, QApplication, QPushButton, QDial
-from PySide6.QtWidgets import QSplitter
-from PySide6.QtMultimediaWidgets import QVideoWidget  # ensures multimedia backend loads
-from PySide6.QtMultimedia import QMediaPlayer
+"""Sidecar EQ - Educational audio player with thermometer-style EQ interface.
 
+This is the main application module containing the MainWindow class and
+the primary UI logic. The application provides:
+
+- Multi-source playback (local files, YouTube URLs, Plex media servers)
+- 7-band thermometer EQ interface with per-track persistence
+- Background audio analysis (frequency response, tempo, etc.)
+- Queue management with drag-and-drop support
+- Recently played tracks history
+- Save/load playlist functionality
+
+The UI is built using PySide6 (Qt6) and consists of:
+- Top toolbar with playback controls and source selector
+- Central queue table showing tracks
+- Right side panel with volume knob, EQ faders, and recently played
+- Bottom status bar with seek slider and time display
+"""
+
+# Standard library imports
+import json
+import math
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+# Third-party imports
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
+from PySide6.QtCore import QDateTime, QModelIndex, QObject, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QAction, QIcon, QKeyEvent, QKeySequence, QPainter, QPixmap
+from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDial,
+    QFileDialog,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSlider,
+    QSplitter,
+    QStyle,
+    QTableView,
+    QToolBar,
+    QWidget,
+)
 
-from sidecar_eq.plex_helpers import get_playlist_titles, get_tracks_for_playlist
-
-from .queue_model import QueueModel
-from . import playlist
-
-class QueueTableView(QTableView):
-    """Custom table view that handles Delete key for removing selected items."""
-    
-    # Signal to notify parent about delete key press
-    delete_key_pressed = Signal()
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-    
-    def keyPressEvent(self, event: QKeyEvent):
-        """Handle key press events, specifically the Delete key."""
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-            # Emit signal so MainWindow can handle the removal
-            self.delete_key_pressed.emit()
-            event.accept()
-        else:
-            # Pass other keys to parent handler
-            super().keyPressEvent(event)
-
-class BackgroundAnalysisWorker(QThread):
-    """Background worker for audio analysis that doesn't block the UI."""
-    
-    # Signals to communicate with main thread
-    analysis_complete = Signal(str, dict)  # path, analysis_result
-    analysis_failed = Signal(str, str)     # path, error_message
-    
-    def __init__(self, audio_path: str, parent=None):
-        super().__init__(parent)
-        self.audio_path = audio_path
-        self._should_stop = False
-    
-    def stop_analysis(self):
-        """Request the analysis to stop."""
-        self._should_stop = True
-    
-    def run(self):
-        """Run analysis in background thread."""
-        try:
-            if self._should_stop:
-                return
-                
-            from .analyzer import analyze
-            print(f"[BackgroundAnalysis] Starting analysis for: {Path(self.audio_path).stem}")
-            
-            # Run the analysis
-            analysis_result = analyze(self.audio_path)
-            
-            if self._should_stop:
-                return
-                
-            if analysis_result:
-                self.analysis_complete.emit(self.audio_path, analysis_result)
-            else:
-                self.analysis_failed.emit(self.audio_path, "Analysis returned no results")
-                
-        except Exception as e:
-            if not self._should_stop:
-                self.analysis_failed.emit(self.audio_path, str(e))
+# Local imports
+from . import playlist, store
+from .indexer import LibraryIndexer
 from .player import Player
+from .queue_model import QueueModel
+from .plex_helpers import get_playlist_titles, get_tracks_for_playlist
+from .search import SearchBar
+from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget
+from .workers import BackgroundAnalysisWorker
 
+# Media file extensions
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".m4v", ".webm", ".wmv", ".3gp"}
-MEDIA_EXTS = AUDIO_EXTS | VIDEO_EXTS  # Combined audio and video extensions
-
-class IconButton(QPushButton):
-    def __init__(self, icon_default, icon_hover, icon_pressed, tooltip="", parent=None):
-        super().__init__(parent)
-        self.icon_default = QIcon(icon_default)
-        self.icon_hover = QIcon(icon_hover)
-        self.icon_pressed = QIcon(icon_pressed)
-        self.setIcon(self.icon_default)
-        self.setIconSize(QSize(32, 32))
-        self.setFlat(True)
-        self.setToolTip(tooltip)
-        self.setFixedSize(40, 40)
-        self._active = False  # Only used for play
-
-    def enterEvent(self, event):
-        if not self._active:
-            self.setIcon(self.icon_hover)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        if not self._active:
-            self.setIcon(self.icon_default)
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        self.setIcon(self.icon_pressed)
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        # For Play: stay pressed if active, else go to hover/default
-        if self._active:
-            self.setIcon(self.icon_pressed)
-        else:
-            self.setIcon(self.icon_hover)
-        super().mouseReleaseEvent(event)
-
-    def setActive(self, active):
-        """Call this to show Play as 'active' or not."""
-        self._active = active
-        if active:
-            self.setIcon(self.icon_pressed)
-        else:
-            self.setIcon(self.icon_default)
+MEDIA_EXTS = AUDIO_EXTS | VIDEO_EXTS
 
 
-class KnobWidget(QLabel):
-    """A simple image-backed knob that maps vertical drag to 0-100 value.
-
-    Emits valueChanged(int).
-    """
-    valueChanged = Signal(int)
-
-    def __init__(self, image_path: str = None, parent=None):
-        super().__init__(parent)
-        self._value = 100
-        self._last_nonzero = 100
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(96, 96)
-        # Only get focus when clicked so wheel doesn’t steal focus
-        self.setFocusPolicy(Qt.ClickFocus)
-        # Rendering and interaction state
-        self._base_pixmap = None  # unrotated knob image (scaled)
-        self._press_pos = None    # for tap detection
-        self._tap_increments = False  # if True, a tap will bump value
-        self._center = None       # center point cache for angular dragging
-        self._image_path = None
-        if image_path:
-            p = Path(image_path)
-            if p.exists():
-                self._image_path = str(p)
-                self._update_pixmap()
-
-        # internal drag state
-        self._dragging = False
-        self._last_y = 0
-
-    def setValue(self, v: int):
-        v = max(0, min(100, int(v)))
-        if v != self._value:
-            self._value = v
-            if v > 0:
-                self._last_nonzero = v
-            self.valueChanged.emit(self._value)
-            # trigger repaint (for rotation)
-            try:
-                self.update()
-            except Exception:
-                pass
-
-    def value(self) -> int:
-        return self._value
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            # Focus so wheel/arrow keys work after click
-            self.setFocus()
-            self._dragging = True
-            self._last_y = event.position().y() if hasattr(event, 'position') else event.y()
-            try:
-                self._press_pos = event.position() if hasattr(event, 'position') else None
-            except Exception:
-                self._press_pos = None
-            event.accept()
-
-    def resizeEvent(self, event):
-        try:
-            self._update_pixmap()
-        except Exception:
-            pass
-        return super().resizeEvent(event)
-
-    def _update_pixmap(self):
-        if not self._image_path:
-            return
-        size = int(min(max(64, self.width()), max(64, self.height())))
-        if size <= 0:
-            return
-        try:
-            if self._image_path.lower().endswith('.svg'):
-                from PySide6.QtSvg import QSvgRenderer
-                pm = QPixmap(size, size)
-                pm.fill(Qt.transparent)
-                painter = QPainter(pm)
-                renderer = QSvgRenderer(self._image_path)
-                renderer.render(painter)
-                painter.end()
-            else:
-                src = QPixmap(self._image_path)
-                pm = src.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self._base_pixmap = pm
-        except Exception:
-            # fallback using QIcon
-            self._base_pixmap = QIcon(self._image_path).pixmap(size, size)
-        try:
-            self.update()
-        except Exception:
-            pass
-
-    def _angle_for_event(self, event):
-        pos = event.position() if hasattr(event, 'position') else None
-        if pos is None:
-            return None
-        w, h = self.width(), self.height()
-        cx, cy = w / 2.0, h / 2.0
-        dx = pos.x() - cx
-        dy = pos.y() - cy
-        import math
-        # y down → invert for traditional angle
-        ang = math.degrees(math.atan2(-(dy), dx))  # -180..180, 0 at right
-        # Clamp to knob sweep [-135, 135]
-        if ang < -135:
-            ang = -135
-        if ang > 135:
-            ang = 135
-        return ang
-
-    def mouseMoveEvent(self, event):
-        if not self._dragging:
-            return super().mouseMoveEvent(event)
-        ang = self._angle_for_event(event)
-        if ang is None:
-            return
-        # Map angle [-135..135] → 0..100
-        val = int(round(((ang + 135.0) / 270.0) * 100.0))
-        self.setValue(val)
-        event.accept()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._dragging:
-            self._dragging = False
-            # Treat tiny motion as a tap
-            try:
-                if self._tap_increments and self._press_pos is not None and hasattr(event, 'position'):
-                    if (event.position() - self._press_pos).manhattanLength() < 3:
-                        self.setValue(min(100, self._value + 5))
-                        event.accept(); return
-            except Exception:
-                pass
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event):
-        # Custom paint: draw a red arc indicator and rotate the knob art
-        pm = self._base_pixmap
-        if pm is None:
-            try:
-                self._update_pixmap()
-                pm = self._base_pixmap
-            except Exception:
-                pm = None
-        if pm is None:
-            return super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        w = self.width(); h = self.height()
-        size = min(w, h)
-        # Map 0..100 to -135..+135 degrees
-        start_deg = -135.0
-        span_deg = (self._value / 100.0) * 270.0
-        # Draw thin red arc around the knob (concentric)
-        arc_margin = max(2, int(size * 0.06))
-        rect = self.rect().adjusted(arc_margin, arc_margin, -arc_margin, -arc_margin)
-        from PySide6.QtGui import QPen, QColor
-        pen = QPen(QColor(220, 60, 60))
-        pen.setWidth(max(2, int(size * 0.04)))
-        pen.setCapStyle(Qt.RoundCap)
-        painter.setPen(pen)
-        painter.drawArc(rect, int(start_deg * 16), int(span_deg * 16))
-        # Draw rotated knob image
-        angle = start_deg + span_deg
-        painter.translate(w / 2.0, h / 2.0)
-        painter.rotate(angle)
-        if pm.width() != size or pm.height() != size:
-            pm = pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        painter.drawPixmap(int(-pm.width() / 2), int(-pm.height() / 2), pm)
-        painter.end()
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            # toggle mute/unmute
-            if self._value > 0:
-                self.setValue(0)
-            else:
-                self.setValue(self._last_nonzero or 100)
-            event.accept()
-        else:
-            super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event):
-        # Scroll to change value
-        delta = 0
-        try:
-            delta = event.angleDelta().y()
-        except Exception:
-            pass
-        if delta == 0:
-            return super().wheelEvent(event)
-        step = 5
-        mods = QApplication.keyboardModifiers()
-        if mods & Qt.ShiftModifier:
-            step = 20
-        elif mods & Qt.ControlModifier:
-            step = 10
-        self.setValue(self._value + (step if delta > 0 else -step))
-        event.accept()
-
-    def keyPressEvent(self, event):
-        step = 5
-        if event.modifiers() & Qt.ShiftModifier:
-            step = 20
-        elif event.modifiers() & Qt.ControlModifier:
-            step = 10
-        if event.key() in (Qt.Key_Up, Qt.Key_Right):
-            self.setValue(self._value + step)
-            event.accept()
-            return
-        if event.key() in (Qt.Key_Down, Qt.Key_Left):
-            self.setValue(self._value - step)
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-class SnapKnobWidget(KnobWidget):
-    """Knob that snaps to a given number of steps on release (e.g., 3 positions)."""
-    def __init__(self, image_path: str = None, steps: int = 3, parent=None):
-        super().__init__(image_path, parent)
-        self._steps = max(2, int(steps))
-
-    # Wrap value so the source knob can rotate infinitely
-    def setValue(self, v: int):
-        try:
-            v = int(v)
-        except Exception:
-            v = 0
-        if v < 0 or v > 100:
-            v = v % 101
-        super().setValue(v)
-
-    def mouseReleaseEvent(self, event):
-        # Handle tap-to-cycle and quantize on release
-        if event.button() == Qt.LeftButton and getattr(self, '_dragging', False):
-            self._dragging = False
-            try:
-                if hasattr(event, 'position') and self._press_pos is not None:
-                    if (event.position() - self._press_pos).manhattanLength() < 3:
-                        self._set_index(self._step_index() + 1)
-                        event.accept(); return
-            except Exception:
-                pass
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-        # Quantize to nearest step after release (if not a tap)
-        try:
-            n = self._steps - 1
-            idx = int(round((self._value / 100.0) * n))
-            target = int(round((idx / n) * 100))
-            self.setValue(target)
-        except Exception:
-            pass
-
-    def _step_index(self):
-        n = self._steps - 1
-        return int(round((self._value / 100.0) * n))
-
-    def _set_index(self, idx: int):
-        n = self._steps - 1
-        idx = max(0, min(n, int(idx)))
-        self.setValue(int(round((idx / n) * 100)))
-
-    def wheelEvent(self, event):
-        delta = 0
-        try:
-            delta = event.angleDelta().y()
-        except Exception:
-            pass
-        if delta == 0:
-            return super().wheelEvent(event)
-        # More responsive: step multiple indices for large wheel delta
-        steps = max(1, abs(int(delta // 120)))
-        self._set_index(self._step_index() + (steps if delta > 0 else -steps))
-        event.accept()
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Up, Qt.Key_Right):
-            self._set_index(self._step_index() + 1)
-            event.accept(); return
-        if event.key() in (Qt.Key_Down, Qt.Key_Left):
-            self._set_index(self._step_index() - 1)
-            event.accept(); return
-        super().keyPressEvent(event)
 class MainWindow(QMainWindow):
-    """Main application window: builds toolbar, queue table, side panel and wires signals."""
+    """Main application window for Sidecar EQ.
+
+    This class orchestrates the entire UI, building the toolbar with playback
+    controls, the central queue table, the side panel with EQ controls, and
+    the status bar. It manages:
+
+    - Audio playback via Player wrapper (QMediaPlayer)
+    - Queue model (add, remove, reorder tracks)
+    - Background analysis workers for audio processing
+    - Per-track EQ settings persistence
+    - Recently played tracks history
+    - Plex server integration (optional)
+
+    The window layout consists of:
+    - Top: Toolbar (play, stop, add, source selector, etc.)
+    - Center: Queue table view
+    - Right: Dock with volume knob, 7-band EQ faders, recently played list
+    - Bottom: Status bar with seek slider and time display
+
+    Attributes:
+        model: QueueModel managing the playlist/queue
+        table: QueueTableView displaying the queue
+        player: Player instance wrapping QMediaPlayer
+        current_row: Currently playing row index (or None)
+
+    Args:
+        parent: Parent widget (optional).
+    """
 
     def __init__(self, parent=None):
+        """Initialize the main window and build the UI.
+
+        Creates the queue model, player, and table view, then calls builder
+        methods to construct the toolbar, side panel, and status bar. Finally
+        wires all signals and applies dock sizing.
+
+        Args:
+            parent: Parent widget, defaults to None.
+        """
         super().__init__(parent)
         try:
             # On macOS, ensure toolbar doesn't merge into title bar invisibly
@@ -434,6 +123,25 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self._pending_analysis_path = None
 
+        # Library indexer
+        try:
+            self.indexer = LibraryIndexer()
+        except Exception as e:
+            print(f"[SidecarEQ] Indexer failed: {e}")
+            self.indexer = None
+
+        # Search bar
+        try:
+            self.search_bar = SearchBar()
+            self.search_bar.result_selected.connect(self._on_search_result_selected)
+            self.search_bar.command_entered.connect(self._on_command_entered)
+            # Connect to indexer
+            if self.indexer:
+                self.search_bar.set_index(self.indexer.get_index())
+        except Exception as e:
+            print(f"[SidecarEQ] Search bar failed: {e}")
+            self.search_bar = None
+
         # Model / table
         try:
             self.model = QueueModel()
@@ -443,10 +151,63 @@ class MainWindow(QMainWindow):
             self.table.setEditTriggers(QTableView.NoEditTriggers)
             self.table.clicked.connect(self._on_table_play)
             self.table.delete_key_pressed.connect(self.on_remove_selected)
-            self.setCentralWidget(self.table)
+            
+            # Configure columns for professional appearance
+            from PySide6.QtWidgets import QHeaderView
+            header = self.table.horizontalHeader()
+            header.setStretchLastSection(False)  # Don't auto-stretch last column
+            
+            # Make all columns user-resizable by dragging
+            header.setSectionResizeMode(0, QHeaderView.Interactive)  # Title - user resizable
+            header.setSectionResizeMode(1, QHeaderView.Interactive)  # Artist - user resizable
+            header.setSectionResizeMode(2, QHeaderView.Interactive)  # Album - user resizable
+            header.setSectionResizeMode(3, QHeaderView.Interactive)  # Play Count - user resizable
+            
+            # Set initial column widths (user can adjust)
+            self.table.setColumnWidth(0, 300)  # Title
+            self.table.setColumnWidth(1, 200)  # Artist
+            self.table.setColumnWidth(2, 200)  # Album
+            self.table.setColumnWidth(3, 100)  # Play Count
+            
+            # Enable word wrap in headers for better text fit
+            header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            
+            # Hide vertical header (row numbers) for cleaner look
+            self.table.verticalHeader().setVisible(False)
+            
+            # Alternating row colors for better readability
+            self.table.setAlternatingRowColors(True)
+            
+            # Enable sorting by clicking column headers
+            self.table.setSortingEnabled(True)
+            
+            # Enable drag & drop for reordering rows
+            self.table.setDragEnabled(True)
+            self.table.setAcceptDrops(True)
+            self.table.setDropIndicatorShown(True)
+            self.table.setDragDropMode(QTableView.InternalMove)
+            self.table.setDefaultDropAction(Qt.MoveAction)
+            
+            # Create container with search bar above queue table
+            from PySide6.QtWidgets import QVBoxLayout
+            central_widget = QWidget()
+            central_layout = QVBoxLayout()
+            central_layout.setContentsMargins(0, 0, 0, 0)
+            central_layout.setSpacing(0)
+            
+            if self.search_bar:
+                central_layout.addWidget(self.search_bar)
+            central_layout.addWidget(self.table)
+            
+            central_widget.setLayout(central_layout)
+            self.setCentralWidget(central_widget)
             
             # Load saved queue state
             self._load_queue_state()
+            
+            # Auto-refresh metadata for existing queue items (background operation)
+            if self.model and hasattr(self.model, '_rows') and len(self.model._rows) > 0:
+                QTimer.singleShot(500, self._auto_refresh_metadata)
         except Exception:
             self.model = None
             self.table = None
@@ -485,6 +246,46 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle('Sidecar EQ')
         self.resize(1000, 640)
+        
+        # Apply clean dark theme with subtle accents
+        self.setStyleSheet("""
+            QMainWindow {
+                background: #1e1e1e;
+            }
+            QTableView {
+                background: #252525;
+                color: #e0e0e0;
+                gridline-color: #3a3a3a;
+                border: 1px solid #3a3a3a;
+                selection-background-color: #0d4f8f;
+                selection-color: white;
+            }
+            QTableView QHeaderView::section {
+                background: #2d2d2d;
+                color: #c0c0c0;
+                font-weight: bold;
+                border: 1px solid #3a3a3a;
+                padding: 5px;
+            }
+            QToolBar {
+                background: #2a2a2a;
+                border-bottom: 1px solid #404040;
+                spacing: 6px;
+                padding: 4px;
+            }
+            QStatusBar {
+                background: #2a2a2a;
+                color: #c0c0c0;
+                border-top: 1px solid #404040;
+            }
+            QDockWidget {
+                background: #1e1e1e;
+                border-left: 1px solid #3a3a3a;
+            }
+            QLabel {
+                color: #c0c0c0;
+            }
+        """)
 
     def _on_table_play(self, index):
         try:
@@ -549,23 +350,23 @@ class MainWindow(QMainWindow):
         tb.setStyleSheet("QToolBar{background:#202020; border-bottom:1px solid #333; padding:4px;}")
         self.addToolBar(tb)
 
-        # Play button
+        # Play/Pause button (toggles play/pause)
         self.play_btn = IconButton(
             "icons/play.svg",
             "icons/play_hover.svg",
             "icons/play_active.svg",
-            tooltip="Play"
+            tooltip="Play / Pause (Space)"
         )
         self.play_btn.clicked.connect(self.on_play)
         self.play_btn.setShortcut(QKeySequence(Qt.Key_Space))
         tb.addWidget(self.play_btn)
 
-        # Stop button
+        # Stop button (stops and saves position for resume)
         stop_btn = IconButton(
             "icons/stop.svg",
             "icons/stop_hover.svg",
             "icons/stop_pressed.svg",
-            tooltip="Stop"
+            tooltip="Stop (resets position)"
         )
         stop_btn.clicked.connect(self.on_stop)
         tb.addWidget(stop_btn)
@@ -580,8 +381,6 @@ class MainWindow(QMainWindow):
         )
         add_btn.clicked.connect(self.on_add_based_on_source)
         tb.addWidget(add_btn)
-        # default add mode
-        self._source_mode = "Local Files"
 
         # Trash button
         tb.addSeparator()
@@ -631,127 +430,141 @@ class MainWindow(QMainWindow):
             wlbl.setAlignment(Qt.AlignCenter)
             layout.addWidget(wlbl)
 
-        # Two-knob row (Volume / Source)
-        knobs_row = QHBoxLayout(); knobs_row.setContentsMargins(0, 0, 0, 0); knobs_row.setSpacing(12)
+        # Clean dark control panel
+        from PySide6.QtWidgets import QSpinBox
+        
+        controls_panel = QWidget()
+        controls_panel.setStyleSheet("""
+            QWidget {
+                background: #252525;
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+            }
+        """)
+        controls_layout = QV(); controls_layout.setContentsMargins(12, 10, 12, 10); controls_layout.setSpacing(10)
+        controls_panel.setLayout(controls_layout)
 
-        # Volume column
-        vol_col = QV(); vol_col.setSpacing(4)
-        vlabel = QLabel("Volume")
-        vf = vlabel.font(); vf.setFamily("Helvetica"); vf.setPointSize(10); vlabel.setFont(vf)
+        # Volume spinner section
+        vol_section = QV(); vol_section.setSpacing(6)
+        vlabel = QLabel("VOLUME")
+        vf = vlabel.font(); vf.setFamily("Helvetica"); vf.setPointSize(9); vf.setBold(True); vlabel.setFont(vf)
         vlabel.setAlignment(Qt.AlignCenter)
-        vol_col.addWidget(vlabel)
-        knob_src = str(Path("icons/knob.svg")) if Path("icons/knob.svg").exists() else (str(wood) if wood.exists() else None)
-        vol_knob = KnobWidget(knob_src)
-        # Enable tap to increment volume by a small step
-        vol_knob._tap_increments = True
-        vol_knob.setMinimumSize(120, 120)
-        vol_knob.setMaximumSize(140, 140)
-        vol_col.addWidget(vol_knob, alignment=Qt.AlignCenter)
-        # Keep reference for global volume shortcuts
-        self._vol_knob = vol_knob
-        self._vol_led = QLabel("10")
-        vledf = self._vol_led.font(); vledf.setFamily("Menlo"); vledf.setPointSize(16); self._vol_led.setFont(vledf)
-        self._vol_led.setAlignment(Qt.AlignCenter)
-        self._vol_led.setFixedWidth(56)
-        self._vol_led.setStyleSheet("color:#ff6666;background:#1e1e1e;padding:2px 6px;border:1px solid #550000;border-radius:4px;")
-        vol_col.addWidget(self._vol_led, alignment=Qt.AlignHCenter)
-        knobs_row.addLayout(vol_col, 1)
+        vlabel.setStyleSheet("color: #b0b0b0; background: transparent; border: none;")
+        vol_section.addWidget(vlabel)
+        
+        # Volume spinner with clean dark styling
+        vol_spinner = QSpinBox()
+        vol_spinner.setRange(0, 100)
+        vol_spinner.setValue(10)
+        vol_spinner.setSuffix(" %")
+        vol_spinner.setAlignment(Qt.AlignCenter)
+        vol_spinner.setFixedHeight(32)
+        vol_spinner.setStyleSheet("""
+            QSpinBox {
+                background: #1a1a1a;
+                color: #4da6ff;
+                font-family: 'Menlo', 'Courier New', monospace;
+                font-size: 14px;
+                font-weight: bold;
+                border: 1px solid #404040;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background: #2d2d2d;
+                border: 1px solid #404040;
+                width: 18px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #3a3a3a;
+            }
+            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+                background: #0d4f8f;
+            }
+        """)
+        vol_section.addWidget(vol_spinner)
+        self._vol_spinner = vol_spinner
+        controls_layout.addLayout(vol_section)
+        
+        layout.addWidget(controls_panel)
 
-        # Source column
-        src_col = QV(); src_col.setSpacing(4)
-        slabel = QLabel("Source")
-        sf = slabel.font(); sf.setFamily("Helvetica"); sf.setPointSize(10); slabel.setFont(sf)
-        slabel.setAlignment(Qt.AlignCenter)
-        src_col.addWidget(slabel)
-        src_knob = SnapKnobWidget(knob_src, steps=3)
-        src_knob.setMinimumSize(120, 120)
-        src_knob.setMaximumSize(140, 140)
-        src_knob.setValue(0)  # Default to Local Files (index 0)
-        src_col.addWidget(src_knob, alignment=Qt.AlignCenter)
-        self._src_knob = src_knob
-        self._src_names = ["Local Files","Website URL","Plex Server"]
-        self._src_led = QLabel("Local Files")
-        sledf = self._src_led.font(); sledf.setFamily("Menlo"); sledf.setPointSize(16); self._src_led.setFont(sledf)
-        self._src_led.setAlignment(Qt.AlignCenter)
-        self._src_led.setFixedWidth(140)
-        self._src_led.setStyleSheet("color:#ff6666;background:#1e1e1e;padding:2px 6px;border:1px solid #550000;border-radius:4px;")
-        src_col.addWidget(self._src_led, alignment=Qt.AlignHCenter)
-        knobs_row.addLayout(src_col, 1)
-
-        layout.addLayout(knobs_row)
-
-        # EQ area with background plate
-        eq_widget = QWidget(); from PySide6.QtWidgets import QHBoxLayout as HB
-        # Offset to fine-tune slider alignment with background grooves for 7-band EQ  
-        # Adjusted for thermometer-style sliders
-        eq_x_offset = 35
-        eq_layout = HB(); eq_layout.setContentsMargins(eq_x_offset, 8, eq_x_offset, 8); eq_layout.setSpacing(28)
-        eq_widget.setLayout(eq_layout); eq_widget.setMinimumHeight(220); eq_widget.setStyleSheet("background:transparent;")
+        # EQ area with dark panel
+        eq_panel = QWidget()
+        eq_panel.setStyleSheet("""
+            QWidget {
+                background: #1a1a1a;
+                border: 1px solid #2a2a2a;
+                border-radius: 4px;
+            }
+        """)
+        # Store reference for opacity menu
+        self._eq_bg_widget = eq_panel
+        from PySide6.QtWidgets import QHBoxLayout as HB
+        eq_x_offset = 18
+        eq_layout = HB(); eq_layout.setContentsMargins(eq_x_offset, 14, eq_x_offset, 14); eq_layout.setSpacing(22)
+        eq_panel.setLayout(eq_layout); eq_panel.setMinimumHeight(230)
 
         self._eq_sliders = []
-        # Create thermometer-style sliders with draggable top endpoints
-        slider_css_fixed = (
-            # The groove (thermometer tube)
+        # 70s receiver-style VU meters with blue glow
+        slider_css_blue_vu = (
+            # The groove (VU meter track) - dark recessed
             "QSlider::groove:vertical { "
-            "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-            "stop:0 rgba(80,80,80,1), stop:1 rgba(120,120,120,1)); "
-            "width: 12px; border: 2px solid rgba(50,50,50,1); "
-            "border-radius: 8px; margin: 0px; "
+            "background: #0a0a0a; "
+            "width: 14px; border: 1px solid #1a1a1a; "
+            "border-radius: 2px; margin: 0px; "
             "}"
-            # The filled part (thermometer liquid) - use add-page for proper bottom-to-top fill
+            # The filled part (blue VU glow) - classic 70s receiver blue
             "QSlider::add-page:vertical { "
             "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-            "stop:0 rgba(100,200,255,0.9), stop:0.5 rgba(80,160,220,1), stop:1 rgba(60,120,180,1)); "
-            "border: 2px solid rgba(40,40,40,1); "
-            "border-radius: 8px; margin: 0px; "
+            "stop:0 #66b3ff, stop:0.4 #3399ff, stop:0.7 #0066cc, stop:1 #003d7a); "
+            "border: none; "
+            "border-radius: 2px; margin: 0px; "
             "}"
-            # The handle (draggable endpoint)
+            # The handle (fader cap) - subtle dark style
             "QSlider::handle:vertical { "
-            "background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
-            "stop:0 rgba(255,255,255,1), stop:0.3 rgba(200,230,255,1), "
-            "stop:0.7 rgba(120,180,240,1), stop:1 rgba(80,140,200,1)); "
-            "width: 24px; height: 16px; margin: -6px 0; "
-            "border: 2px solid rgba(40,80,120,1); "
-            "border-radius: 8px; "
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #404040, stop:0.5 #505050, stop:1 #404040); "
+            "width: 22px; height: 16px; margin: -4px 0; "
+            "border: 1px solid #2a2a2a; "
+            "border-radius: 2px; "
             "}"
-            # Hover state
+            # Hover state - blue accent
             "QSlider::handle:vertical:hover { "
-            "background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
-            "stop:0 rgba(255,255,255,1), stop:0.3 rgba(220,240,255,1), "
-            "stop:0.7 rgba(140,200,255,1), stop:1 rgba(100,160,220,1)); "
-            "border: 2px solid rgba(20,60,100,1); "
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #4a4a4a, stop:0.5 #5a5a5a, stop:1 #4a4a4a); "
+            "border: 1px solid #4da6ff; "
             "}"
-            # Pressed state
+            # Pressed state - darker with blue
             "QSlider::handle:vertical:pressed { "
-            "background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, "
-            "stop:0 rgba(200,220,240,1), stop:0.3 rgba(160,190,220,1), "
-            "stop:0.7 rgba(100,140,180,1), stop:1 rgba(60,100,140,1)); "
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #2a2a2a, stop:0.5 #3a3a3a, stop:1 #2a2a2a); "
+            "border: 1px solid #0d4f8f; "
             "}"
         )
 
         # Create exactly 7 sliders for standard 7-band EQ (60Hz, 150Hz, 400Hz, 1kHz, 2.4kHz, 6kHz, 15kHz)
         for i in range(7):
             s = QSlider(Qt.Vertical)
-            s.setRange(-12, 12); s.setValue(0); s.setFixedHeight(180)
+            s.setRange(-12, 12); s.setValue(0); s.setFixedHeight(185)
             
             # Don't invert - let CSS handle the appearance properly
             
-            s.setStyleSheet(slider_css_fixed)
+            s.setStyleSheet(slider_css_blue_vu)
             
             # Connect slider changes to EQ update
             s.valueChanged.connect(self._on_eq_changed)
             
             eq_layout.addWidget(s); self._eq_sliders.append(s)
 
-        # Just add the thermometer widget directly - no background needed
-        layout.addWidget(eq_widget)
+        # Add the EQ panel
+        layout.addWidget(eq_panel)
         
-        # Add frequency labels very close to the thermometers
-        freq_layout = HB(); freq_layout.setContentsMargins(eq_x_offset, 0, eq_x_offset, 4); freq_layout.setSpacing(28)
+        # Add frequency labels with clean dark styling
+        freq_layout = HB(); freq_layout.setContentsMargins(eq_x_offset, 0, eq_x_offset, 8); freq_layout.setSpacing(22)
         for freq in ["60 Hz", "150 Hz", "400 Hz", "1 kHz", "2.4 kHz", "6 kHz", "15 kHz"]:
             label = QLabel(freq)
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("color: #cccccc; font-size: 11px; font-family: 'Helvetica'; font-weight: bold;")
+            label.setStyleSheet("color: #808080; font-size: 10px; font-family: 'Helvetica'; font-weight: normal; background: transparent; border: none;")
             freq_layout.addWidget(label)
         layout.addLayout(freq_layout)
 
@@ -774,21 +587,7 @@ class MainWindow(QMainWindow):
                 self._save_volume_for_current_track(val)
             except Exception as e:
                 print(f"[App] Failed to save volume: {e}")
-        vol_knob.valueChanged.connect(_on_vol)
-
-        def _on_src(val):
-            try:
-                idx = min(2, max(0, int(round(val/50))))
-                names = getattr(self, '_src_names', ["Local Files","Website URL","Plex Server"])
-                mode = names[idx]
-                self._src_led.setText(mode); self._source_mode = mode
-            except Exception: pass
-        src_knob.valueChanged.connect(_on_src)
-        # Initialize highlight
-        try:
-            _on_src(src_knob.value())
-        except Exception:
-            pass
+        vol_spinner.valueChanged.connect(_on_vol)
 
     def _build_menubar(self):
         """Create a macOS-native menubar with File/Playback/View/Help."""
@@ -800,16 +599,17 @@ class MainWindow(QMainWindow):
         act_add_folder = QAction("Add Folder…", self); act_add_folder.triggered.connect(self.on_add_folder)
         act_save_pl = QAction("Save Playlist…", self); act_save_pl.triggered.connect(self.on_save_playlist)
         act_load_pl = QAction("Load Playlist…", self); act_load_pl.triggered.connect(self.on_load_playlist)
-        act_import_plex = QAction("Import Plex Playlist…", self); act_import_plex.triggered.connect(self.import_plex_playlist)
+        act_refresh_meta = QAction("Refresh Metadata", self); act_refresh_meta.triggered.connect(self.on_refresh_metadata)
         act_save_eq = QAction("Save Song EQ", self); act_save_eq.triggered.connect(self._safe_save_eq)
+        act_index_folder = QAction("Index Music Folder for Search…", self); act_index_folder.triggered.connect(self.on_index_folder)
         act_quit = QAction("Quit", self); act_quit.setShortcut(QKeySequence.Quit); act_quit.triggered.connect(lambda: QApplication.instance().quit())
-        for a in [act_add_files, act_add_folder, act_save_pl, act_load_pl, act_import_plex, act_save_eq]:
+        for a in [act_add_files, act_add_folder, act_save_pl, act_load_pl, act_refresh_meta, act_save_eq, act_index_folder]:
             m_file.addAction(a)
         m_file.addSeparator(); m_file.addAction(act_quit)
 
         # Playback menu
         m_play = mb.addMenu("Playback")
-        act_play = QAction("Play", self); act_play.setShortcut(Qt.Key_Space); act_play.triggered.connect(self.on_play)
+        act_play = QAction("Play / Pause", self); act_play.setShortcut(Qt.Key_Space); act_play.triggered.connect(self.on_play)
         act_stop = QAction("Stop", self); act_stop.triggered.connect(self.on_stop)
         act_next = QAction("Next", self); act_next.setShortcut(QKeySequence.MoveToNextWord); act_next.triggered.connect(self.on_next)
         for a in [act_play, act_stop, act_next]: m_play.addAction(a)
@@ -830,6 +630,12 @@ class MainWindow(QMainWindow):
         self._eq_opacity_actions["EQ Plate Opacity • Medium (60%)"].setChecked(True)
         # Apply after side panel builds (safe-call)
         QTimer.singleShot(0, lambda: self._set_eq_opacity(0.60))
+
+        # Search shortcut (Cmd+F / Ctrl+F)
+        act_search = QAction("Search", self)
+        act_search.setShortcut(QKeySequence.Find)
+        act_search.triggered.connect(lambda: self.search_bar.focus_search() if self.search_bar else None)
+        m_file.addAction(act_search)
 
         # Help menu
         m_help = mb.addMenu("Help")
@@ -854,14 +660,44 @@ class MainWindow(QMainWindow):
 
     # --- Toolbar handlers ---
     def on_play(self):
-        if self.current_row is None:
-            # use selected row if any, else first row
-            sel = self.table.selectionModel().selectedRows()
-            self._play_row(sel[0].row() if sel else 0)
+        """Toggle between play and pause. Play button shows current state."""
+        # If currently playing, pause it
+        if self.player.is_playing():
+            self.player.pause()
+            self.statusBar().showMessage("Paused")
+            self.play_btn.setActive(False)  # Show as not active (paused state)
         else:
-            self._play_row(self.current_row)
+            # Check if we're in paused state (track loaded but not playing)
+            if self.current_row is not None and self.player._player.playbackState() == QMediaPlayer.PausedState:
+                # Resume from paused position
+                self.player._player.play()
+                self.statusBar().showMessage("Playing (resumed)")
+                self.play_btn.setActive(True)
+            elif self.current_row is None:
+                # No track loaded - start from selected or first row
+                sel = self.table.selectionModel().selectedRows()
+                self._play_row(sel[0].row() if sel else 0)
+            else:
+                # Track was stopped, restart from beginning
+                self._play_row(self.current_row)
 
     def on_stop(self):
+        """Stop playback and save current position for resume."""
+        if self.current_row is not None and self.player:
+            # Save current position for potential resume
+            try:
+                current_pos = self.player._player.position()
+                paths = self.model.paths()
+                if self.current_row < len(paths):
+                    path = paths[self.current_row]
+                    # Store position in per-track settings
+                    store_data = store.get_record(path) or {}
+                    store_data['last_position_ms'] = current_pos
+                    store.put_record(path, store_data)
+                    print(f"[App] Saved position {current_pos}ms for resume")
+            except Exception as e:
+                print(f"[App] Failed to save position: {e}")
+        
         self.player.stop()
         self.statusBar().showMessage("Stopped")
         self.play_btn.setActive(False)
@@ -872,19 +708,8 @@ class MainWindow(QMainWindow):
         self._play_row(self.current_row + 1)
 
     def on_add_based_on_source(self):
-        # Use the toolbar source toggles to decide behavior
-        choice = getattr(self, '_source_mode', 'Local Files')
-        if choice == 'Local Files':
-            return self.on_add_files()
-        elif choice == 'Website URL':
-            url, ok = QInputDialog.getText(self, 'Add URL', 'Enter audio URL:')
-            if ok and url:
-                # For now, just add the URL as a path — callers must handle network playback
-                self.model.add_paths([url])
-                self.statusBar().showMessage('Added URL')
-        elif choice == 'Plex Server':
-            # Reuse existing playlist import UX
-            return self.import_plex_playlist()
+        # v1.0.0: Local files only (Plex/Web deferred to v2.0.0)
+        return self.on_add_files()
 
     def on_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -916,6 +741,308 @@ class MainWindow(QMainWindow):
         rows = [ix.row() for ix in sel]
         self.model.remove_rows(rows)
         self.statusBar().showMessage(f"Removed {len(rows)} rows")
+
+    def _on_search_result_selected(self, file_path: str, play_immediately: bool):
+        """Handle selection of a search result.
+        
+        Args:
+            file_path: Path to the selected audio file
+            play_immediately: If True, add and play; if False, just add to queue
+        """
+        if not file_path or not Path(file_path).exists():
+            self.statusBar().showMessage("File not found!", 3000)
+            return
+            
+        # Add to queue
+        count = self.model.add_paths([file_path])
+        
+        if count > 0:
+            new_row = len(self.model._rows) - 1  # Last row added
+            
+            if play_immediately:
+                # Play the new track immediately
+                self._play_row(new_row)
+                self.statusBar().showMessage(f"Playing: {Path(file_path).name}", 3000)
+            else:
+                # Just added to queue
+                self.statusBar().showMessage(f"Added: {Path(file_path).name}", 2000)
+                
+    def _on_command_entered(self, command: str):
+        """Handle command entered in search bar.
+        
+        Args:
+            command: Command string (e.g., "HELP", "PLAYLIST local")
+        """
+        parts = command.strip().split()
+        if not parts:
+            return
+            
+        cmd = parts[0].upper()
+        args = parts[1:] if len(parts) > 1 else []
+        
+        if cmd == "HELP":
+            self._show_help_dialog()
+        elif cmd == "PLAYLIST":
+            self._handle_playlist_command(args)
+        elif cmd == "EQ":
+            self._handle_eq_command(args)
+        else:
+            self.statusBar().showMessage(f"Unknown command: {cmd}. Try HELP", 3000)
+            
+    def _show_help_dialog(self):
+        """Show help dialog with available commands."""
+        help_text = """<h2>Sidecar EQ Commands</h2>
+        
+        <p><b>Search:</b> Just type song names, artists, or albums!</p>
+        
+        <p><b>Available Commands:</b></p>
+        <ul>
+            <li><b>HELP</b> - Show this help dialog</li>
+            <li><b>PLAYLIST local</b> - Load local .m3u playlist</li>
+            <li><b>EQ export</b> - Export current EQ settings</li>
+        </ul>
+        
+        <p><b>Tips:</b></p>
+        <ul>
+            <li>Press <b>Enter</b> to play the first result immediately</li>
+            <li>Click a result to add it to the queue</li>
+            <li>Tracks with ⭐ have saved EQ settings</li>
+            <li>▶ shows play count</li>
+        </ul>
+        """
+        QMessageBox.information(self, "Sidecar EQ Help", help_text)
+        
+    def _handle_playlist_command(self, args: list):
+        """Handle PLAYLIST command.
+        
+        Args:
+            args: Command arguments
+        """
+        if not args or args[0] != "local":
+            self.statusBar().showMessage("Usage: PLAYLIST local", 3000)
+            return
+            
+        # Open file dialog for .m3u playlist
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Playlist", "", "Playlist Files (*.m3u *.m3u8)"
+        )
+        if file_path:
+            self.on_load_playlist(file_path)
+            
+    def _handle_eq_command(self, args: list):
+        """Handle EQ command.
+        
+        Args:
+            args: Command arguments
+        """
+        if not args or args[0] != "export":
+            self.statusBar().showMessage("Usage: EQ export", 3000)
+            return
+            
+        # Export current EQ settings
+        if self.current_row is not None and self.current_row < len(self.model._rows):
+            track_info = self.model._rows[self.current_row]
+            path = track_info.get("path", "")
+            
+            if path:
+                settings = store.get_record(path)
+                if settings and "eq" in settings:
+                    # Show EQ values
+                    eq_vals = settings["eq"]
+                    msg = f"Current EQ:\n{eq_vals}"
+                    QMessageBox.information(self, "EQ Settings", msg)
+                else:
+                    self.statusBar().showMessage("No EQ saved for this track", 3000)
+            else:
+                self.statusBar().showMessage("No track playing", 3000)
+        else:
+            self.statusBar().showMessage("No track playing", 3000)
+            
+    def on_index_folder(self):
+        """Index a music folder for search functionality (runs in background)."""
+        if not self.indexer:
+            QMessageBox.warning(self, "Indexer Error", "Library indexer not available!")
+            return
+            
+        folder = QFileDialog.getExistingDirectory(self, "Select Music Folder to Index")
+        if not folder:
+            return
+            
+        # Start background indexing thread
+        self._start_background_indexing(folder)
+        
+    def _start_background_indexing(self, folder: str):
+        """Start indexing in a background thread.
+        
+        Args:
+            folder: Path to folder to index
+        """
+        from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal
+        
+        class ProgressSignals(QObject):
+            """Signals for progress updates (must be QObject for thread safety)."""
+            progress = Signal(int, int)  # scanned, added
+            finished = Signal(int, int, str)  # added, total, error
+        
+        class IndexingTask(QRunnable):
+            """Background task for indexing music library."""
+            def __init__(self, indexer, folder, signals):
+                super().__init__()
+                self.indexer = indexer
+                self.folder = folder
+                self.signals = signals
+                
+            def run(self):
+                """Run the indexing scan."""
+                try:
+                    def progress_callback(scanned, added):
+                        self.signals.progress.emit(scanned, added)
+                    
+                    added = self.indexer.scan_folder(
+                        self.folder, 
+                        recursive=True,
+                        progress_callback=progress_callback
+                    )
+                    total = len(self.indexer.get_index())
+                    self.signals.finished.emit(added, total, "")
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self.signals.finished.emit(0, 0, str(e))
+        
+        # Create signals
+        signals = ProgressSignals()
+        signals.progress.connect(self._on_indexing_progress)
+        signals.finished.connect(self._on_indexing_complete)
+        
+        # Show initial status
+        self.statusBar().showMessage(f"🔍 Indexing {Path(folder).name}... You can keep using the app!", 0)
+        
+        # Create and start background task
+        task = IndexingTask(self.indexer, folder, signals)
+        QThreadPool.globalInstance().start(task)
+        
+    def _on_indexing_progress(self, scanned: int, added: int):
+        """Handle progress updates from background indexer.
+        
+        Args:
+            scanned: Number of audio files scanned so far
+            added: Number of new tracks added so far
+        """
+        self.statusBar().showMessage(
+            f"🔍 Indexing... Scanned {scanned} files, added {added} new tracks", 
+            0
+        )
+        
+    def _on_indexing_complete(self, added: int, total: int, error: Optional[str]):
+        """Handle indexing completion (called from background thread).
+        
+        Args:
+            added: Number of tracks added
+            total: Total tracks in index
+            error: Error message if failed, None if successful
+        """
+        if error:
+            self.statusBar().showMessage(f"Indexing failed: {error}", 5000)
+            QMessageBox.warning(self, "Indexing Error", f"Failed to index folder:\n{error}")
+            return
+            
+        # Update search bar with new index (on main thread)
+        if self.search_bar:
+            self.search_bar.set_index(self.indexer.get_index())
+            
+        # Show completion message
+        self.statusBar().showMessage(
+            f"✅ Indexing complete! Added {added} new tracks. Total: {total} searchable tracks.", 
+            5000
+        )
+        
+        # Show dialog with results
+        QMessageBox.information(
+            self, 
+            "Indexing Complete! 🎵", 
+            f"Successfully indexed your music library!\n\n"
+            f"• Added: {added} new tracks\n"
+            f"• Total searchable: {total} tracks\n\n"
+            f"You can now search for songs using the search bar at the top!\n"
+            f"Try typing an artist or song name. 🔍"
+        )
+
+    def _auto_refresh_metadata(self):
+        """Silently refresh metadata on startup without status message."""
+        self._refresh_metadata_internal(show_message=False)
+    
+    def on_refresh_metadata(self):
+        """Re-scan all tracks in the queue and update their metadata."""
+        self._refresh_metadata_internal(show_message=True)
+    
+    def _refresh_metadata_internal(self, show_message=True):
+        """Internal method to refresh metadata."""
+        if not self.model or not hasattr(self.model, '_rows'):
+            return
+        
+        try:
+            from mutagen import File as MutagenFile
+        except:
+            QMessageBox.warning(self, "Mutagen Not Installed", 
+                              "Mutagen library is required for metadata reading.\nInstall with: pip install mutagen")
+            return
+        
+        updated_count = 0
+        for row in self.model._rows:
+            path = row.get('path', '')
+            if not path or path.startswith(('http://', 'https://')):
+                continue  # Skip URLs
+            
+            try:
+                # Re-read metadata using the improved logic
+                mf = MutagenFile(path)
+                if mf and hasattr(mf, 'tags') and mf.tags:
+                    tags = mf.tags
+                    
+                    title = None
+                    artist = None
+                    album = None
+                    
+                    # Title
+                    for key in ['TIT2', 'title', '©nam', 'TITLE']:
+                        if key in tags:
+                            val = tags[key]
+                            title = str(val[0]) if isinstance(val, list) else str(val)
+                            break
+                    
+                    # Artist
+                    for key in ['TPE1', 'artist', '©ART', 'ARTIST']:
+                        if key in tags:
+                            val = tags[key]
+                            artist = str(val[0]) if isinstance(val, list) else str(val)
+                            break
+                    
+                    # Album
+                    for key in ['TALB', 'album', '©alb', 'ALBUM']:
+                        if key in tags:
+                            val = tags[key]
+                            album = str(val[0]) if isinstance(val, list) else str(val)
+                            break
+                    
+                    # Update the row if we found any metadata
+                    if any([title, artist, album]):
+                        if title:
+                            row['title'] = title
+                        if artist:
+                            row['artist'] = artist
+                        if album:
+                            row['album'] = album
+                        updated_count += 1
+            except Exception as e:
+                print(f"[App] Failed to refresh metadata for {Path(path).name}: {e}")
+                continue
+        
+        # Force table refresh
+        self.model.layoutChanged.emit()
+        if show_message:
+            self.statusBar().showMessage(f"Refreshed metadata for {updated_count} tracks")
+        print(f"[App] Refreshed metadata for {updated_count}/{len(self.model._rows)} tracks")
 
     def on_save_playlist(self):
         out, _ = QFileDialog.getSaveFileName(self, "Save Playlist (JSON)", "", "JSON (*.json)")
@@ -1094,6 +1221,15 @@ class MainWindow(QMainWindow):
                     # Reset to flat EQ if no analysis available
                     self._apply_eq_settings([0]*7)
                 
+                # Always check for saved volume, independent of EQ data
+                # This ensures manually-set volumes are preserved even before analysis
+                print(f"[App] 🔍 Looking up settings for: {identifier}")
+                saved_data = self.load_eq_for_track(identifier)
+                if saved_data and 'suggested_volume' in saved_data:
+                    self._apply_volume_setting(saved_data['suggested_volume'])
+                else:
+                    print(f"[App] ⚠️  No saved volume found for this track")
+                
         except Exception as e:
             QMessageBox.warning(self, "Play error", str(e))
     
@@ -1175,20 +1311,23 @@ class MainWindow(QMainWindow):
             self._pending_analysis_path = None
     
     def _apply_volume_setting(self, suggested_volume: int):
-        """Apply suggested volume to the volume knob."""
+        """Apply suggested volume to the volume spinner without triggering save."""
         try:
-            if hasattr(self, '_vol_knob'):
+            if hasattr(self, '_vol_spinner'):
                 # Clamp to valid range
                 volume = max(0, min(100, suggested_volume))
-                self._vol_knob.setValue(volume)
-                print(f"[App] Applied suggested volume: {volume}")
+                # Block signals to prevent saving this loaded value back to the track
+                self._vol_spinner.blockSignals(True)
+                self._vol_spinner.setValue(volume)
+                self._vol_spinner.blockSignals(False)
+                print(f"[App] 📻 LOADED volume {volume}%")
         except Exception as e:
             print(f"[App] Failed to apply volume: {e}")
     
     def _save_volume_for_current_track(self, volume_value: int):
         """Save volume setting for the currently playing track."""
         try:
-            if not self.current_row or not self.model:
+            if self.current_row is None or not self.model:
                 return
             
             # Get current track path
@@ -1204,7 +1343,7 @@ class MainWindow(QMainWindow):
             
             # Save back to file
             self._save_analysis_data(track_path, existing_data)
-            print(f"[App] Saved volume {volume_value} for track: {Path(track_path).stem}")
+            print(f"[App] 💾 SAVED volume {volume_value}% for: {track_path}")
             
         except Exception as e:
             print(f"[App] Error saving volume: {e}")
@@ -1222,12 +1361,21 @@ class MainWindow(QMainWindow):
             print(f"[App] Failed to apply EQ: {e}")
     
     def _on_eq_changed(self):
-        """Handle EQ slider changes and apply audio effects."""
+        """Handle EQ slider changes and apply audio effects.
+        
+        NOTE: EQ visualization only! Qt's QMediaPlayer doesn't support real-time audio EQ.
+        To add actual audio processing, you would need to integrate:
+        - PyAudio + numpy for real-time DSP filtering, or
+        - FFmpeg's audio filters (requires complex pipeline), or
+        - A third-party audio engine like OpenAL or FMOD
+        
+        For now, the EQ sliders save settings per-track and provide visual feedback.
+        """
         try:
             # Get current EQ values
             eq_values = [slider.value() for slider in self._eq_sliders]
             
-            # Apply EQ settings to the player
+            # Apply EQ settings to the player (currently just stores values)
             self._apply_eq_to_player(eq_values)
             
             # Auto-save EQ settings for current track
@@ -1266,15 +1414,15 @@ class MainWindow(QMainWindow):
                 volume_compensation = 0.9
             
             # Get current volume setting and apply compensation
-            if hasattr(self, '_vol_knob') and self._vol_knob and self._vol_knob.value() is not None:
-                base_volume = self._vol_knob.value() / 100.0
+            if hasattr(self, '_vol_spinner') and self._vol_spinner and self._vol_spinner.value() is not None:
+                base_volume = self._vol_spinner.value() / 100.0
                 adjusted_volume = base_volume * volume_compensation
                 
                 # Apply to player
                 if hasattr(self.player, 'set_volume'):
                     self.player.set_volume(adjusted_volume)
             else:
-                # Default volume if no knob available
+                # Default volume if no spinner available
                 if hasattr(self.player, 'set_volume'):
                     self.player.set_volume(0.7 * volume_compensation)
                     
@@ -1284,7 +1432,7 @@ class MainWindow(QMainWindow):
                 treble_adjustment = eq_values[4] + eq_values[5] + eq_values[6]  # 2.4kHz + 6kHz + 15kHz
                 
                 print(f"[App] EQ Applied - Bass: {bass_adjustment:+.1f}dB, Mid: {mid_adjustment:+.1f}dB, Treble: {treble_adjustment:+.1f}dB")
-                if hasattr(self, '_vol_knob') and self._vol_knob and self._vol_knob.value() is not None:
+                if hasattr(self, '_vol_spinner') and self._vol_spinner and self._vol_spinner.value() is not None:
                     print(f"[App] Volume compensation: {volume_compensation:.2f} (base: {base_volume:.2f} -> adjusted: {adjusted_volume:.2f})")
                 else:
                     print(f"[App] Volume compensation: {volume_compensation:.2f} (default volume used)")
@@ -1336,12 +1484,26 @@ class MainWindow(QMainWindow):
                 except Exception:
                     data = {}
             
+            # Helper function to convert numpy types to native Python types for JSON serialization
+            def convert_to_native(obj):
+                """Recursively convert numpy types to native Python types."""
+                import numpy as np
+                if isinstance(obj, (np.integer, np.floating)):
+                    return obj.item()
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_to_native(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [convert_to_native(item) for item in obj]
+                return obj
+            
             # Store both EQ settings and analysis metadata
             existing_track_data = data.get(path, {})
             data[path] = {
-                'eq_settings': analysis_data.get('gains_db', [0]*7),
-                'suggested_volume': analysis_data.get('analysis_data', {}).get('suggested_volume'),
-                'analysis_data': analysis_data.get('analysis_data', {}),
+                'eq_settings': convert_to_native(analysis_data.get('gains_db', [0]*7)),
+                'suggested_volume': convert_to_native(analysis_data.get('analysis_data', {}).get('suggested_volume')),
+                'analysis_data': convert_to_native(analysis_data.get('analysis_data', {})),
                 'analyzed_at': str(QDateTime.currentDateTime().toString()),
                 'play_count': existing_track_data.get('play_count', 0),  # Don't increment here
                 'manual_save': existing_track_data.get('manual_save', False)  # Preserve manual save flag
@@ -1380,7 +1542,7 @@ class MainWindow(QMainWindow):
         eq_values = [int(s.value()) for s in getattr(self, '_eq_sliders', [])]
         
         # Get current volume
-        current_volume = self._vol_knob.value() if hasattr(self, '_vol_knob') else 75
+        current_volume = self._vol_spinner.value() if hasattr(self, '_vol_spinner') else 75
         
         # Load existing data (to preserve analysis results)
         p = self._eq_store_path()
@@ -1531,12 +1693,8 @@ def main():
     except Exception:
         pass
 
-    # High DPI before QApplication is created
-    try:
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    except Exception:
-        pass
+    # High DPI support is automatic in Qt6, no need to set attributes
+    # (AA_EnableHighDpiScaling and AA_UseHighDpiPixmaps are deprecated in Qt 6.10)
 
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -1569,18 +1727,18 @@ def main():
             from PySide6.QtCore import QEvent
             if event.type() == QEvent.KeyPress:
                 if event.key() in (Qt.Key_VolumeUp, Qt.Key_Plus, Qt.Key_Equal):
-                    # Find volume knob and bump +1
+                    # Find volume spinner and bump +1
                     try:
                         # We stored it on window during side panel build
-                        if hasattr(w, '_vol_knob'):
-                            w._vol_knob.setValue(w._vol_knob.value() + 1)
+                        if hasattr(w, '_vol_spinner'):
+                            w._vol_spinner.setValue(w._vol_spinner.value() + 1)
                             return True
                     except Exception:
                         pass
                 if event.key() in (Qt.Key_VolumeDown, Qt.Key_Minus, Qt.Key_Underscore):
                     try:
-                        if hasattr(w, '_vol_knob'):
-                            w._vol_knob.setValue(w._vol_knob.value() - 1)
+                        if hasattr(w, '_vol_spinner'):
+                            w._vol_spinner.setValue(w._vol_spinner.value() - 1)
                             return True
                     except Exception:
                         pass

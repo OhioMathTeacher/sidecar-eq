@@ -53,10 +53,82 @@ class QueueModel(QAbstractTableModel):
 
     def supportedDropActions(self):
         return Qt.MoveAction
+    
+    def mimeTypes(self):
+        """Return list of supported MIME types for drag-drop."""
+        return ['application/x-qabstractitemmodeldatalist']
+    
+    def mimeData(self, indexes):
+        """Create MIME data for dragged items."""
+        mimeData = super().mimeData(indexes)
+        return mimeData
+    
+    def dropMimeData(self, data, action, row, column, parent):
+        """Handle drop of MIME data (enables drag-drop reordering)."""
+        if action == Qt.IgnoreAction:
+            return True
+        
+        if not data.hasFormat('application/x-qabstractitemmodeldatalist'):
+            return False
+        
+        # Get the source row from the selection (we'll handle this via moveRows)
+        # Qt will call moveRows() automatically when this returns True
+        return super().dropMimeData(data, action, row, column, parent)
 
     def moveRows(self, sourceParent, sourceRow, count, destinationParent, destinationChild):
-        # TODO: implement bulk‐add of multiple file paths
-        return 0
+        """Move rows to reorder the queue via drag & drop.
+        
+        destinationChild is the row index where items should be inserted.
+        When dropping between rows, Qt gives us the index where the drop indicator appears.
+        """
+        if sourceRow < 0 or sourceRow >= len(self._rows):
+            return False
+        if destinationChild < 0 or destinationChild > len(self._rows):
+            return False
+        
+        # If source and destination are the same, no move needed
+        if sourceRow == destinationChild or sourceRow == destinationChild - 1:
+            return False
+        
+        # Calculate actual destination index after removal
+        actual_dest = destinationChild
+        if destinationChild > sourceRow:
+            # Moving down - the destination index shifts up by the number of removed items
+            actual_dest = destinationChild - count
+        
+        # Perform the move
+        self.beginMoveRows(sourceParent, sourceRow, sourceRow + count - 1, 
+                          destinationParent, actual_dest)
+        
+        # Extract rows to move
+        rows_to_move = self._rows[sourceRow:sourceRow + count]
+        
+        # Remove from original position
+        del self._rows[sourceRow:sourceRow + count]
+        
+        # Insert at destination
+        for i, row in enumerate(rows_to_move):
+            self._rows.insert(actual_dest + i, row)
+        
+        self.endMoveRows()
+        return True
+    
+    def sort(self, column, order=Qt.AscendingOrder):
+        """Sort the queue by the specified column."""
+        self.layoutAboutToBeChanged.emit()
+        
+        reverse = (order == Qt.DescendingOrder)
+        
+        if column == 0:  # Title
+            self._rows.sort(key=lambda r: (r.get("title") or Path(r["path"]).name).lower(), reverse=reverse)
+        elif column == 1:  # Artist
+            self._rows.sort(key=lambda r: (r.get("artist") or "").lower(), reverse=reverse)
+        elif column == 2:  # Album
+            self._rows.sort(key=lambda r: (r.get("album") or "").lower(), reverse=reverse)
+        elif column == 3:  # Play Count
+            self._rows.sort(key=lambda r: r.get("play_count", 0), reverse=reverse)
+        
+        self.layoutChanged.emit()
 
     # --- Helpers ---
     def add_paths(self, paths):
@@ -104,14 +176,64 @@ class QueueModel(QAbstractTableModel):
             elif MutagenFile and not ap.startswith(('http://', 'https://')):
                 # For audio files, try to read tags via mutagen
                 try:
-                    mf = MutagenFile(ap, easy=True)
+                    # Try reading with mutagen - handles MP3, FLAC, OGG, M4A, etc.
+                    mf = MutagenFile(ap)
                     if mf:
-                        row["title"]  = mf.get("title",  [Path(ap).stem])[0]
-                        row["artist"] = mf.get("artist", [""])[0]
-                        row["album"]  = mf.get("album",  [""])[0]
-                except Exception:
-                    # leave title/artist/album as None if reading fails
-                    pass
+                        # Extract metadata - mutagen uses different tag names for different formats
+                        # MP3 (ID3): TIT2, TPE1, TALB
+                        # FLAC/OGG: title, artist, album
+                        # M4A: ©nam, ©ART, ©alb
+                        
+                        title = None
+                        artist = None
+                        album = None
+                        
+                        # Try common tag names across formats
+                        if hasattr(mf, 'tags') and mf.tags:
+                            tags = mf.tags
+                            
+                            # Title
+                            for key in ['TIT2', 'title', '©nam', 'TITLE']:
+                                if key in tags:
+                                    val = tags[key]
+                                    title = str(val[0]) if isinstance(val, list) else str(val)
+                                    break
+                            
+                            # Artist
+                            for key in ['TPE1', 'artist', '©ART', 'ARTIST']:
+                                if key in tags:
+                                    val = tags[key]
+                                    artist = str(val[0]) if isinstance(val, list) else str(val)
+                                    break
+                            
+                            # Album
+                            for key in ['TALB', 'album', '©alb', 'ALBUM']:
+                                if key in tags:
+                                    val = tags[key]
+                                    album = str(val[0]) if isinstance(val, list) else str(val)
+                                    break
+                        
+                        # Fallback to easy tags if regular tags didn't work
+                        if not any([title, artist, album]):
+                            try:
+                                easy = MutagenFile(ap, easy=True)
+                                if easy:
+                                    title = easy.get("title", [None])[0]
+                                    artist = easy.get("artist", [None])[0]
+                                    album = easy.get("album", [None])[0]
+                            except:
+                                pass
+                        
+                        row["title"] = title or Path(ap).stem
+                        row["artist"] = artist or ""
+                        row["album"] = album or ""
+                    else:
+                        # Fallback to filename if mutagen can't read the file
+                        row["title"] = Path(ap).stem
+                except Exception as e:
+                    # Fallback to filename on any error
+                    row["title"] = Path(ap).stem
+                    print(f"[QueueModel] Failed to read metadata for {Path(ap).name}: {e}")
             
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
