@@ -482,3 +482,124 @@ class SnapKnobWidget(KnobWidget):
         n = self._steps - 1
         target = int(round((idx / n) * 100))
         self.setValue(target)
+
+
+class WaveformProgress(QLabel):
+    """A waveform-style progress bar that supports click-to-seek.
+
+    Displays a visual waveform/level meter that fills with color as playback
+    progresses. Supports clicking anywhere to seek to that position. Similar
+    to SoundCloud's waveform player.
+
+    The waveform is simulated using random bar heights for visual interest.
+    The played portion shows in blue/cyan, unplayed in dark gray.
+
+    Signals:
+        seekRequested(int): Emitted when user clicks to seek (position in ms).
+
+    Args:
+        parent: Parent widget (optional).
+
+    Attributes:
+        seekRequested: Qt signal emitted on click-to-seek.
+    """
+
+    seekRequested = Signal(int)
+
+    def __init__(self, parent=None):
+        """Initialize the waveform progress widget.
+
+        Args:
+            parent: Parent widget, defaults to None.
+        """
+        super().__init__(parent)
+        self._duration = 0  # Total duration in milliseconds
+        self._position = 0  # Current position in milliseconds
+        self.setMinimumHeight(60)
+        self.setMinimumWidth(200)
+        self.setCursor(Qt.PointingHandCursor)
+        # Generate simulated waveform data (bar heights 0.0-1.0)
+        import random
+        self._waveform = [random.uniform(0.3, 1.0) for _ in range(200)]
+
+    def setDuration(self, duration_ms: int):
+        """Set the total duration.
+
+        Args:
+            duration_ms: Duration in milliseconds.
+        """
+        self._duration = max(0, duration_ms)
+        self.update()
+
+    def setPosition(self, position_ms: int):
+        """Set the current playback position.
+
+        Args:
+            position_ms: Position in milliseconds.
+        """
+        self._position = max(0, position_ms)
+        self.update()
+
+    def mousePressEvent(self, event):
+        """Handle click-to-seek.
+
+        Calculate the seek position based on where the user clicked
+        and emit seekRequested signal.
+
+        Args:
+            event: The mouse press event.
+        """
+        if event.button() == Qt.LeftButton and self._duration > 0:
+            x = event.position().x() if hasattr(event, "position") else event.x()
+            width = self.width()
+            if width > 0:
+                fraction = max(0.0, min(1.0, x / width))
+                seek_ms = int(fraction * self._duration)
+                self.seekRequested.emit(seek_ms)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        """Custom paint: draw waveform bars with color fill based on progress.
+
+        Args:
+            event: The paint event.
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        width = self.width()
+        height = self.height()
+
+        # Background
+        painter.fillRect(0, 0, width, height, QColor(20, 20, 20))
+
+        # Calculate progress fraction
+        progress = 0.0
+        if self._duration > 0:
+            progress = min(1.0, self._position / self._duration)
+
+        # Draw waveform bars
+        bar_count = len(self._waveform)
+        bar_width = max(1, width / bar_count)
+
+        for i, amp in enumerate(self._waveform):
+            x = i * bar_width
+            bar_height = int(amp * height * 0.8)  # 80% max height
+            y = (height - bar_height) // 2
+
+            # Determine color: played = blue/cyan, unplayed = dark gray
+            bar_progress = (i + 0.5) / bar_count  # Center of bar
+            if bar_progress <= progress:
+                # Played portion - gradient from blue to cyan
+                blue_val = int(100 + (155 * (1.0 - bar_progress)))
+                color = QColor(50, 150 + int(50 * amp), blue_val)
+            else:
+                # Unplayed portion - dark gray
+                gray_val = int(60 + (40 * amp))
+                color = QColor(gray_val, gray_val, gray_val)
+
+            painter.fillRect(int(x), y, max(1, int(bar_width - 1)), bar_height, color)
+
+        painter.end()

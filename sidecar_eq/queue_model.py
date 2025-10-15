@@ -8,8 +8,25 @@ import os
 import json
 from . import store
 from .metadata import read_tags
+from .metadata_extractor import extract_comprehensive_metadata
 
-COLUMNS = ["Title", "Artist", "Album", "Play Count"]
+# Expanded columns for professional music management
+COLUMNS = [
+    "●",           # Play status indicator (radio button)
+    "Title", 
+    "Artist", 
+    "Album",
+    "Year",
+    "Label",
+    "Producer",
+    "Rating",      # 1-5 stars
+    "Bitrate",
+    "Format",
+    "Sample Rate",
+    "Bit Depth",
+    "Duration",
+    "Play Count"
+]
 
 class QueueModel(QAbstractTableModel):
     def __init__(self, parent=None):
@@ -26,18 +43,84 @@ class QueueModel(QAbstractTableModel):
         return len(COLUMNS)
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or role not in (Qt.DisplayRole,):
+        if not index.isValid():
             return None
-        row = self._rows[index.row()]
+            
+        row_data = self._rows[index.row()]
         col = index.column()
-        if col == 0:
-            return row.get("title") or Path(row["path"]).name
-        elif col == 1:
-            return row.get("artist") or ""
-        elif col == 2:
-            return row.get("album") or ""
-        elif col == 3:
-            return str(row.get("play_count", 0))
+        
+        # Handle different roles
+        if role == Qt.DisplayRole:
+            # Column 0: Play status (handled by delegate, return empty for now)
+            if col == 0:
+                return ""  # Delegate will draw the radio button
+            # Column 1: Title
+            elif col == 1:
+                return row_data.get("title") or Path(row_data["path"]).stem
+            # Column 2: Artist
+            elif col == 2:
+                return row_data.get("artist") or ""
+            # Column 3: Album
+            elif col == 3:
+                return row_data.get("album") or ""
+            # Column 4: Year
+            elif col == 4:
+                return row_data.get("year") or ""
+            # Column 5: Label
+            elif col == 5:
+                return row_data.get("label") or ""
+            # Column 6: Producer
+            elif col == 6:
+                return row_data.get("producer") or ""
+            # Column 7: Rating (1-5 stars)
+            elif col == 7:
+                rating = row_data.get("rating", 0)
+                return "★" * rating + "☆" * (5 - rating) if rating else ""
+            # Column 8: Bitrate
+            elif col == 8:
+                return row_data.get("bitrate") or ""
+            # Column 9: Format
+            elif col == 9:
+                return row_data.get("format") or Path(row_data["path"]).suffix.upper()[1:]
+            # Column 10: Sample Rate
+            elif col == 10:
+                return row_data.get("sample_rate") or ""
+            # Column 11: Bit Depth
+            elif col == 11:
+                return row_data.get("bit_depth") or ""
+            # Column 12: Duration
+            elif col == 12:
+                duration = row_data.get("duration")
+                if duration:
+                    mins = int(duration // 60)
+                    secs = int(duration % 60)
+                    return f"{mins}:{secs:02d}"
+                return ""
+            # Column 13: Play Count
+            elif col == 13:
+                return str(row_data.get("play_count", 0))
+        
+        # UserRole returns the full path (for internal use)
+        elif role == Qt.UserRole:
+            return row_data.get("path")
+        
+        # EditRole for editable fields
+        elif role == Qt.EditRole:
+            if col == 1:  # Title
+                return row_data.get("title") or Path(row_data["path"]).stem
+            elif col == 2:  # Artist
+                return row_data.get("artist") or ""
+            elif col == 3:  # Album
+                return row_data.get("album") or ""
+            elif col == 4:  # Year
+                return row_data.get("year") or ""
+            elif col == 5:  # Label
+                return row_data.get("label") or ""
+            elif col == 6:  # Producer
+                return row_data.get("producer") or ""
+            elif col == 7:  # Rating (return number 0-5)
+                return row_data.get("rating", 0)
+        
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -49,7 +132,126 @@ class QueueModel(QAbstractTableModel):
 
     def flags(self, index):
         default = super().flags(index)
-        return default | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
+        flags = default | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
+        
+        # Make columns 1-7 editable (Title, Artist, Album, Year, Label, Producer, Rating)
+        col = index.column()
+        if 1 <= col <= 7:
+            flags |= Qt.ItemIsEditable
+        
+        return flags
+    
+    def setData(self, index, value, role=Qt.EditRole):
+        """Allow editing of metadata fields."""
+        if not index.isValid() or role != Qt.EditRole:
+            return False
+        
+        row_data = self._rows[index.row()]
+        col = index.column()
+        changed = False
+        
+        if col == 1:  # Title
+            row_data["title"] = str(value) if value else ""
+            changed = True
+        elif col == 2:  # Artist
+            row_data["artist"] = str(value) if value else ""
+            changed = True
+        elif col == 3:  # Album
+            row_data["album"] = str(value) if value else ""
+            changed = True
+        elif col == 4:  # Year
+            row_data["year"] = str(value) if value else ""
+            changed = True
+        elif col == 5:  # Label
+            row_data["label"] = str(value) if value else ""
+            changed = True
+        elif col == 6:  # Producer
+            row_data["producer"] = str(value) if value else ""
+            changed = True
+        elif col == 7:  # Rating (0-5)
+            try:
+                rating = max(0, min(5, int(value)))
+                row_data["rating"] = rating
+                changed = True
+            except (ValueError, TypeError):
+                return False
+        
+        if changed:
+            # Emit dataChanged signal
+            self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole])
+            
+            # Save updated metadata to file tags (if it's a local file)
+            path = row_data.get("path", "")
+            if path and not path.startswith(('http://', 'https://')):
+                self._save_metadata_to_file(path, row_data)
+            
+            return True
+        
+        return False
+    
+    def _save_metadata_to_file(self, file_path, row_data):
+        """Write updated metadata back to the audio file tags."""
+        if not MutagenFile or not os.path.exists(file_path):
+            return
+        
+        try:
+            audio = MutagenFile(file_path)
+            if not audio or not hasattr(audio, 'tags'):
+                return
+            
+            # Get or create tags
+            if audio.tags is None:
+                audio.add_tags()
+            
+            tags = audio.tags
+            
+            # Map our fields to appropriate tag names (handles MP3, FLAC, etc.)
+            # Title
+            title = row_data.get("title")
+            if title:
+                for key in ['TIT2', 'title', '©nam']:
+                    try:
+                        tags[key] = title
+                        break
+                    except:
+                        continue
+            
+            # Artist
+            artist = row_data.get("artist")
+            if artist:
+                for key in ['TPE1', 'artist', '©ART']:
+                    try:
+                        tags[key] = artist
+                        break
+                    except:
+                        continue
+            
+            # Album
+            album = row_data.get("album")
+            if album:
+                for key in ['TALB', 'album', '©alb']:
+                    try:
+                        tags[key] = album
+                        break
+                    except:
+                        continue
+            
+            # Year/Date
+            year = row_data.get("year")
+            if year:
+                for key in ['TDRC', 'date', '©day']:
+                    try:
+                        tags[key] = str(year)
+                        break
+                    except:
+                        continue
+            
+            # Save changes
+            audio.save()
+            print(f"[QueueModel] Saved metadata to {Path(file_path).name}")
+            
+        except Exception as e:
+            print(f"[QueueModel] Failed to save metadata to {Path(file_path).name}: {e}")
 
     def supportedDropActions(self):
         return Qt.MoveAction
@@ -158,82 +360,42 @@ class QueueModel(QAbstractTableModel):
             # Check if this is a video file that needs audio extraction
             is_video = is_video_file(ap) if not ap.startswith(('http://', 'https://')) else False
             
+            # Initialize row with comprehensive metadata
             row = {
                 "path": ap,
+                "play_count": rec.get("play_count", 0),
+                "is_video": is_video,
+                # Initialize all metadata fields
                 "title": None,
                 "artist": None,
                 "album": None,
-                "play_count": rec.get("play_count", 0),
-                "is_video": is_video  # Flag to indicate video file
+                "year": None,
+                "label": None,
+                "producer": None,
+                "rating": 0,
+                "bitrate": None,
+                "format": None,
+                "sample_rate": None,
+                "bit_depth": None,
+                "duration": None,
             }
-            # Try to read metadata
+            
+            # Extract metadata
             if is_video:
                 # For video files, use filename as title and add video indicator
                 video_stem = Path(ap).stem
                 row["title"] = f"{video_stem} (video)"
                 row["artist"] = "Video File"
                 row["album"] = ""
-            elif MutagenFile and not ap.startswith(('http://', 'https://')):
-                # For audio files, try to read tags via mutagen
-                try:
-                    # Try reading with mutagen - handles MP3, FLAC, OGG, M4A, etc.
-                    mf = MutagenFile(ap)
-                    if mf:
-                        # Extract metadata - mutagen uses different tag names for different formats
-                        # MP3 (ID3): TIT2, TPE1, TALB
-                        # FLAC/OGG: title, artist, album
-                        # M4A: ©nam, ©ART, ©alb
-                        
-                        title = None
-                        artist = None
-                        album = None
-                        
-                        # Try common tag names across formats
-                        if hasattr(mf, 'tags') and mf.tags:
-                            tags = mf.tags
-                            
-                            # Title
-                            for key in ['TIT2', 'title', '©nam', 'TITLE']:
-                                if key in tags:
-                                    val = tags[key]
-                                    title = str(val[0]) if isinstance(val, list) else str(val)
-                                    break
-                            
-                            # Artist
-                            for key in ['TPE1', 'artist', '©ART', 'ARTIST']:
-                                if key in tags:
-                                    val = tags[key]
-                                    artist = str(val[0]) if isinstance(val, list) else str(val)
-                                    break
-                            
-                            # Album
-                            for key in ['TALB', 'album', '©alb', 'ALBUM']:
-                                if key in tags:
-                                    val = tags[key]
-                                    album = str(val[0]) if isinstance(val, list) else str(val)
-                                    break
-                        
-                        # Fallback to easy tags if regular tags didn't work
-                        if not any([title, artist, album]):
-                            try:
-                                easy = MutagenFile(ap, easy=True)
-                                if easy:
-                                    title = easy.get("title", [None])[0]
-                                    artist = easy.get("artist", [None])[0]
-                                    album = easy.get("album", [None])[0]
-                            except:
-                                pass
-                        
-                        row["title"] = title or Path(ap).stem
-                        row["artist"] = artist or ""
-                        row["album"] = album or ""
-                    else:
-                        # Fallback to filename if mutagen can't read the file
-                        row["title"] = Path(ap).stem
-                except Exception as e:
-                    # Fallback to filename on any error
-                    row["title"] = Path(ap).stem
-                    print(f"[QueueModel] Failed to read metadata for {Path(ap).name}: {e}")
+                row["format"] = Path(ap).suffix.upper()[1:]
+            elif not ap.startswith(('http://', 'https://')):
+                # For local audio files, extract comprehensive metadata
+                metadata = extract_comprehensive_metadata(ap)
+                row.update(metadata)  # Merge all extracted metadata into row
+            else:
+                # For URLs, use basic info
+                row["title"] = Path(ap).stem
+                row["format"] = "Stream"
             
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
