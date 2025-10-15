@@ -61,19 +61,20 @@ class CollapsiblePanel(QWidget):
         self.title_frame = QFrame()
         self.title_frame.setFrameShape(QFrame.StyledPanel)
         self.title_frame.setCursor(QCursor(Qt.PointingHandCursor))
+        # Use a flatter title bar with minimal separators and consistent font
         self.title_frame.setStyleSheet("""
             QFrame {
-                background: #2a2a2a;
-                border: 1px solid #404040;
-                border-radius: 0px;
+                background: transparent;
+                border: none;
+                padding: 4px 0px;
             }
             QFrame:hover {
-                background: #323232;
+                background: rgba(255,255,255,0.02);
             }
         """)
         
         title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(12, 8, 12, 8)
+        title_layout.setContentsMargins(12, 4, 12, 4)  # Reduced from 8 to 4 vertical padding
         title_layout.setSpacing(10)
         
         # Arrow indicator (▼ expanded, ▶ collapsed)
@@ -81,21 +82,27 @@ class CollapsiblePanel(QWidget):
         self.arrow_label.setStyleSheet("""
             QLabel {
                 color: #888888;
-                font-size: 12px;
+                font-size: 9px;
                 font-weight: bold;
+                background: transparent;
+                border: none;
             }
         """)
         title_layout.addWidget(self.arrow_label)
         
         # Title text
         self.title_label = QLabel(self.title)
-        title_font = QFont()
+        title_font = QFont("Helvetica", 9)  # Reduced from 11 to 9
         title_font.setBold(True)
-        title_font.setPointSize(11)
         self.title_label.setFont(title_font)
+        # Match the 'VOLUME' label style: modern sans, uppercase, subtle color
         self.title_label.setStyleSheet("""
             QLabel {
                 color: #d0d0d0;
+                font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+                letter-spacing: 0.5px;
+                background: transparent;
+                border: none;
             }
         """)
         title_layout.addWidget(self.title_label, stretch=1)

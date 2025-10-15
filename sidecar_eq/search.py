@@ -80,20 +80,20 @@ class SearchBar(QWidget):
         
         # Search input field
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search songs, artists, albums... (or try HELP)")
+        self.search_input.setPlaceholderText("Search your library...")
         self.search_input.setStyleSheet("""
             QLineEdit {
-                background: #2a2a2a;
+                background: #1e1e1e;
                 color: #ffffff;
-                border: 2px solid #404040;
+                border: 1px solid #333333;
                 border-radius: 6px;
-                padding: 10px 14px;
+                padding: 8px 12px;
                 font-size: 14px;
                 selection-background-color: #4a9eff;
             }
             QLineEdit:focus {
-                border: 2px solid #5a9eff;
-                background: #303030;
+                border: 1px solid #5a9eff;
+                background: #222222;
             }
         """)
         self.search_input.textChanged.connect(self._on_text_changed)
@@ -109,33 +109,121 @@ class SearchBar(QWidget):
         """)
         layout.addWidget(search_container)
         
-        # Split view: Results (left) | Info panel (right)
-        self.split_view = QSplitter(Qt.Horizontal)
-        self.split_view.setHandleWidth(1)
-        self.split_view.setStyleSheet("""
-            QSplitter::handle {
+        # Scrollable results area with multiple categorized columns
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background: #1a1a1a;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #1a1a1a;
+                width: 12px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
                 background: #404040;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #505050;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
-        self.split_view.hide()  # Hidden until search results appear
         
-        # LEFT: Results list (compact - just title & artist)
-        results_widget = QWidget()
-        results_layout = QVBoxLayout()
-        results_layout.setContentsMargins(0, 0, 0, 0)
-        results_layout.setSpacing(0)
+        # Container for all category columns
+        results_container = QWidget()
+        results_container_layout = QHBoxLayout()
+        results_container_layout.setContentsMargins(8, 8, 8, 8)
+        results_container_layout.setSpacing(8)
+        results_container_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         
-        self.results_list = QListWidget()
-        self.results_list.setStyleSheet("""
+        # Create category list widgets
+        self.category_lists = {}
+        categories = [
+            ("Top Plays", "🔥"),
+            ("Matching Songs", "🎵"),
+            ("Albums", "💿"),
+            ("Related Artists", "👥"),
+        ]
+        
+        for category_name, icon in categories:
+            category_widget = self._create_category_list(category_name, icon)
+            self.category_lists[category_name] = category_widget
+            results_container_layout.addWidget(category_widget)
+        
+        results_container_layout.addStretch()
+        results_container.setLayout(results_container_layout)
+        
+        scroll_area.setWidget(results_container)
+        scroll_area.hide()  # Hidden until search results appear
+        self.results_scroll_area = scroll_area
+        
+        layout.addWidget(scroll_area)
+        
+        self.setLayout(layout)
+        
+        # Timer for debounced search (wait 150ms after typing stops)
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._perform_search)
+        
+        # Track current selection
+        self._current_selection = None
+    
+    def _create_category_list(self, title: str, icon: str) -> QWidget:
+        """Create a categorized results list widget.
+        
+        Args:
+            title: Category title (e.g., "Top Plays")
+            icon: Emoji icon for the category
+            
+        Returns:
+            QWidget containing the category list
+        """
+        container = QWidget()
+        container.setFixedWidth(220)  # Fixed width for uniform columns
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        
+        # Category header
+        header = QLabel(f"{icon} {title}")
+        header.setStyleSheet("""
+            QLabel {
+                color: #4a9eff;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 8px 10px;
+                background: #252525;
+                border: 1px solid #333;
+                border-radius: 4px 4px 0 0;
+            }
+        """)
+        container_layout.addWidget(header)
+        
+        # Results list for this category
+        list_widget = QListWidget()
+        list_widget.setFixedHeight(300)  # Fixed height for uniform appearance
+        list_widget.setStyleSheet("""
             QListWidget {
                 background: #2a2a2a;
                 color: #ffffff;
-                border: 1px solid #404040;
+                border: 1px solid #333;
                 border-top: none;
+                border-radius: 0 0 4px 4px;
                 outline: none;
+                font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Liberation Sans Narrow', sans-serif;
+                font-size: 10px;
             }
             QListWidget::item {
-                padding: 8px 14px;
+                padding: 5px 8px;
                 border-bottom: 1px solid #333;
             }
             QListWidget::item:hover {
@@ -146,91 +234,15 @@ class SearchBar(QWidget):
                 color: #ffffff;
             }
         """)
-        self.results_list.itemClicked.connect(self._on_result_clicked)
-        self.results_list.currentItemChanged.connect(self._on_result_highlighted)
-        results_layout.addWidget(self.results_list)
-        results_widget.setLayout(results_layout)
+        list_widget.itemDoubleClicked.connect(self._on_category_item_double_clicked)
+        container_layout.addWidget(list_widget)
         
-        # RIGHT: Info panel (artist/song info)
-        info_widget = QWidget()
-        info_layout = QVBoxLayout()
-        info_layout.setContentsMargins(8, 8, 8, 8)
-        info_layout.setSpacing(8)
+        container.setLayout(container_layout)
         
-        # Info panel header
-        self.info_header = QLabel("Select a track to see info")
-        self.info_header.setStyleSheet("""
-            QLabel {
-                color: #888888;
-                font-size: 12px;
-                font-style: italic;
-            }
-        """)
-        info_layout.addWidget(self.info_header)
+        # Store reference to the list widget
+        setattr(container, 'list_widget', list_widget)
         
-        # Info browser (shows artist/song details from web)
-        self.info_browser = QTextBrowser()
-        self.info_browser.setStyleSheet("""
-            QTextBrowser {
-                background: #252525;
-                color: #e0e0e0;
-                border: 1px solid #404040;
-                border-radius: 4px;
-                padding: 8px;
-            }
-        """)
-        self.info_browser.setOpenExternalLinks(True)
-        self.info_browser.setHtml("<p style='color: #666'>Highlight a search result to see details...</p>")
-        info_layout.addWidget(self.info_browser)
-        
-        # Add to queue button (explicit action)
-        self.add_button = QPushButton("➕ Add to Queue")
-        self.add_button.setStyleSheet("""
-            QPushButton {
-                background: #0d4f8f;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 10px 16px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #1a5fa0;
-            }
-            QPushButton:pressed {
-                background: #0a3d70;
-            }
-            QPushButton:disabled {
-                background: #333;
-                color: #666;
-            }
-        """)
-        self.add_button.clicked.connect(self._on_add_to_queue)
-        self.add_button.setEnabled(False)  # Disabled until item selected
-        info_layout.addWidget(self.add_button)
-        
-        info_widget.setLayout(info_layout)
-        
-        # Add both widgets to splitter (30% results, 70% info)
-        self.split_view.addWidget(results_widget)
-        self.split_view.addWidget(info_widget)
-        self.split_view.setSizes([300, 700])  # 30/70 split
-        
-        layout.addWidget(self.split_view)
-        
-        # Spacer to push everything up
-        layout.addStretch()
-        
-        self.setLayout(layout)
-        
-        # Timer for debounced search (wait 150ms after typing stops)
-        self._search_timer = QTimer()
-        self._search_timer.setSingleShot(True)
-        self._search_timer.timeout.connect(self._perform_search)
-        
-        # Track currently selected item for info fetching
-        self._current_selection = None
+        return container
         
     def set_icon(self, icon_path: str):
         """Set custom search icon from file path.
@@ -268,25 +280,129 @@ class SearchBar(QWidget):
             self.split_view.hide()
             
     def _perform_search(self):
-        """Execute the search and display results."""
+        """Execute the search and display categorized results."""
         query = self.search_input.text().strip()
         
         if not query:
-            self.split_view.hide()
+            self.results_scroll_area.hide()
             return
             
-        # Check if it's a command (starts with uppercase word)
-        if self._is_command(query):
-            self._show_command_hint(query)
-            return
+        # Clear all category lists
+        for category_widget in self.category_lists.values():
+            category_widget.list_widget.clear()
             
-        # Perform fuzzy search
-        results = self._fuzzy_search(query, max_results=20)
+        # Perform fuzzy search on all indexed tracks
+        query_lower = query.lower()
+        matching_tracks = []
         
-        if results:
-            self._display_results(results)
-        else:
-            self._show_no_results()
+        for path, meta in self.index.items():
+            title = meta.get('title', '').lower()
+            artist = meta.get('artist', '').lower()
+            album = meta.get('album', '').lower()
+            
+            # Calculate match score
+            score = 0
+            if query_lower in title:
+                score += 10
+            if query_lower in artist:
+                score += 8
+            if query_lower in album:
+                score += 5
+            
+            if score > 0:
+                matching_tracks.append((path, meta, score))
+        
+        if not matching_tracks:
+            self.results_scroll_area.hide()
+            return
+        
+        # Sort by score
+        matching_tracks.sort(key=lambda x: x[2], reverse=True)
+        
+        # Populate categories
+        self._populate_top_plays(matching_tracks)
+        self._populate_matching_songs(matching_tracks)
+        self._populate_albums(matching_tracks)
+        self._populate_related_artists(matching_tracks)
+        
+        # Show results
+        self.results_scroll_area.show()
+    
+    def _populate_top_plays(self, matching_tracks: List[Tuple[str, Dict, int]]):
+        """Populate Top Plays category (top 10 by play count)."""
+        list_widget = self.category_lists["Top Plays"].list_widget
+        
+        # Sort by play count
+        sorted_tracks = sorted(matching_tracks, key=lambda x: x[1].get('play_count', 0), reverse=True)
+        
+        for i, (path, meta, _) in enumerate(sorted_tracks[:10]):
+            title = meta.get('title', 'Unknown')
+            artist = meta.get('artist', 'Unknown')
+            plays = meta.get('play_count', 0)
+            
+            item = QListWidgetItem(f"{i+1}. {title[:25]}{'...' if len(title) > 25 else ''}\n   {artist[:20]} • {plays} plays")
+            item.setData(Qt.UserRole, path)
+            list_widget.addItem(item)
+    
+    def _populate_matching_songs(self, matching_tracks: List[Tuple[str, Dict, int]]):
+        """Populate Matching Songs category (top 10 by search score)."""
+        list_widget = self.category_lists["Matching Songs"].list_widget
+        
+        for i, (path, meta, score) in enumerate(matching_tracks[:10]):
+            title = meta.get('title', 'Unknown')
+            artist = meta.get('artist', 'Unknown')
+            
+            item = QListWidgetItem(f"{i+1}. {title[:25]}{'...' if len(title) > 25 else ''}\n   {artist[:20]}")
+            item.setData(Qt.UserRole, path)
+            list_widget.addItem(item)
+    
+    def _populate_albums(self, matching_tracks: List[Tuple[str, Dict, int]]):
+        """Populate Albums category (unique albums from matches)."""
+        list_widget = self.category_lists["Albums"].list_widget
+        
+        # Group by album
+        albums = {}
+        for path, meta, score in matching_tracks:
+            album = meta.get('album', 'Unknown Album')
+            artist = meta.get('artist', 'Unknown')
+            if album not in albums:
+                albums[album] = {'artist': artist, 'count': 0, 'path': path}
+            albums[album]['count'] += 1
+        
+        # Sort by track count
+        sorted_albums = sorted(albums.items(), key=lambda x: x[1]['count'], reverse=True)
+        
+        for i, (album, info) in enumerate(sorted_albums[:10]):
+            item = QListWidgetItem(f"{i+1}. {album[:25]}{'...' if len(album) > 25 else''}\n   {info['artist'][:20]} • {info['count']} tracks")
+            item.setData(Qt.UserRole, info['path'])
+            list_widget.addItem(item)
+    
+    def _populate_related_artists(self, matching_tracks: List[Tuple[str, Dict, int]]):
+        """Populate Related Artists category (artists from matching tracks)."""
+        list_widget = self.category_lists["Related Artists"].list_widget
+        
+        # Group by artist
+        artists = {}
+        for path, meta, score in matching_tracks:
+            artist = meta.get('artist', 'Unknown')
+            if artist not in artists:
+                artists[artist] = {'count': 0, 'plays': 0, 'path': path}
+            artists[artist]['count'] += 1
+            artists[artist]['plays'] += meta.get('play_count', 0)
+        
+        # Sort by track count
+        sorted_artists = sorted(artists.items(), key=lambda x: x[1]['count'], reverse=True)
+        
+        for i, (artist, info) in enumerate(sorted_artists[:10]):
+            item = QListWidgetItem(f"{i+1}. {artist[:30]}{'...' if len(artist) > 30 else ''}\n   {info['count']} tracks • {info['plays']} plays")
+            item.setData(Qt.UserRole, info['path'])
+            list_widget.addItem(item)
+    
+    def _on_category_item_double_clicked(self, item):
+        """Handle double-click on category item - add to queue."""
+        path = item.data(Qt.UserRole)
+        if path:
+            self.result_selected.emit(path, True)  # True = play immediately
             
     def _is_command(self, text: str) -> bool:
         """Check if input looks like a command.
@@ -451,8 +567,8 @@ class SearchBar(QWidget):
             path = first_item.data(Qt.UserRole)
             if path:
                 self.result_selected.emit(path, True)  # Add and play immediately
-                self.search_input.clear()
-                self.split_view.hide()
+                # Keep search results visible so user can browse related tracks
+                # Don't clear the search input or hide the results panel
                 
     def _on_result_highlighted(self, current, previous):
         """Handle highlighting a search result (populate info panel).
@@ -464,8 +580,7 @@ class SearchBar(QWidget):
         if not current:
             self._current_selection = None
             self.add_button.setEnabled(False)
-            self.info_browser.setHtml("<p style='color: #666'>Highlight a search result to see details...</p>")
-            self.info_header.setText("Select a track to see info")
+            self.info_browser.setHtml("<p style='color: #666; font-size: 11px; padding: 8px;'>Highlight a search result to see details...</p>")
             return
             
         path = current.data(Qt.UserRole)
@@ -497,15 +612,11 @@ class SearchBar(QWidget):
         play_count = meta.get('play_count', 0)
         has_eq = meta.get('has_eq', False)
         
-        # Update header
-        self.info_header.setText(f"{title} - {artist}")
-        
-        # Build rich HTML info
+        # Build rich HTML info (uniform font, no title captions)
         html = f"""
         <html>
-        <body style="font-family: Arial, sans-serif; color: #e0e0e0;">
-            <h2 style="color: #4a9eff; margin-bottom: 8px;">{title}</h2>
-            <h3 style="color: #888; margin-top: 0; font-weight: normal;">{artist}</h3>
+        <body style="font-family: Arial, sans-serif; color: #e0e0e0; font-size: 11px; padding: 8px;">
+            <p style="margin: 4px 0;"><b>{title}</b> by {artist}</p>
             
             <p style="color: #999; margin: 8px 0;">
                 <b>Album:</b> {album}
@@ -523,14 +634,54 @@ class SearchBar(QWidget):
             <hr style="border: none; border-top: 1px solid #404040; margin: 16px 0;">
             
             <p style="color: #666; font-style: italic; font-size: 12px;">
-                🚧 Artist/song information from AllMusic or Wikipedia will appear here in a future update.
-                For now, this shows your local library metadata.
+                � Fetching artist information from Wikipedia, MusicBrainz, and Last.fm...
             </p>
         </body>
         </html>
         """
         
         self.info_browser.setHtml(html)
+        
+        # Fetch online metadata in the background
+        # Use a timer to avoid blocking the UI during search
+        from PySide6.QtCore import QTimer
+        
+        def fetch_and_update():
+            try:
+                from .online_metadata import get_metadata_fetcher
+                fetcher = get_metadata_fetcher()
+                info = fetcher.fetch_artist_info(artist, title)
+                
+                local_meta = {
+                    'title': title,
+                    'artist': artist,
+                    'album': album,
+                    'path': path
+                }
+                
+                # Format and update the HTML
+                html_updated = fetcher.format_artist_info_html(info, local_meta)
+                self.info_browser.setHtml(html_updated)
+            except Exception as e:
+                print(f"[Search] Failed to fetch online metadata: {e}")
+                # Show error in the info panel
+                error_html = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; color: #e0e0e0;">
+                    <h2 style="color: #4a9eff;">{title}</h2>
+                    <h3 style="color: #888;">{artist}</h3>
+                    <p style="color: #999;"><b>Album:</b> {album}</p>
+                    <p style="color: #999;"><b>Plays:</b> {play_count}</p>
+                    <hr style="border: none; border-top: 1px solid #404040; margin: 16px 0;">
+                    <p style="color: #ff6b6b;">❌ Could not fetch online metadata: {str(e)}</p>
+                    <p style="color: #666; font-size: 11px;">Check your internet connection.</p>
+                </body>
+                </html>
+                """
+                self.info_browser.setHtml(error_html)
+        
+        # Fetch after a short delay to let the UI update first
+        QTimer.singleShot(100, fetch_and_update)
         
     def _on_add_to_queue(self):
         """Handle clicking 'Add to Queue' button."""
@@ -568,6 +719,44 @@ class SearchBar(QWidget):
         """Give focus to the search input field."""
         self.search_input.setFocus()
         self.search_input.selectAll()
+    
+    def set_search_text(self, text: str, trigger_search: bool = False):
+        """Set the search input text and optionally trigger a search.
+        
+        Args:
+            text: Text to set in the search box
+            trigger_search: If True, immediately trigger search and show results
+        """
+        self.search_input.setText(text)
+        if trigger_search:
+            self._on_text_changed(text)
+    
+    def search_for_track(self, title: str, artist: str = "", album: str = ""):
+        """Search for a specific track and show results.
+        
+        This is useful for auto-searching the currently playing track to show
+        related songs from the same artist/album.
+        
+        Args:
+            title: Song title
+            artist: Artist name (optional)
+            album: Album name (optional)
+        """
+        # Use the most specific info available: prioritize artist, then title, then album
+        # This makes the search bar look cleaner and more intentional
+        if artist and artist.strip() and artist != "Unknown Artist":
+            query = artist.strip()
+        elif title and title.strip() and title != "Unknown":
+            query = title.strip()
+        elif album and album.strip():
+            query = album.strip()
+        else:
+            query = "Unknown"
+        
+        # Set text and trigger search
+        self.set_search_text(query, trigger_search=True)
+        
+        print(f"[SearchBar] Auto-search for: {query}")
         
     def _update_autocomplete(self):
         """Build autocomplete suggestions from the index."""

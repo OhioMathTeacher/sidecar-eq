@@ -28,7 +28,7 @@ from typing import Optional
 # Third-party imports
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
-from PySide6.QtCore import QDateTime, QModelIndex, QObject, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QDateTime, QModelIndex, QObject, QSize, Qt, QThread, QTimer, Signal, QPoint
 from PySide6.QtGui import QAction, QIcon, QKeyEvent, QKeySequence, QPainter, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -68,6 +69,92 @@ from .workers import BackgroundAnalysisWorker
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".m4v", ".webm", ".wmv", ".3gp"}
 MEDIA_EXTS = AUDIO_EXTS | VIDEO_EXTS
+
+
+class CustomTableHeader(QHeaderView):
+    """Custom table header with column management via context menu.
+    
+    Features:
+    - Right-click context menu to hide/show columns
+    - Drag-to-reorder columns (built-in QHeaderView feature)
+    - Visual indicator (⋮) on hover
+    """
+    
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.setSectionsMovable(True)  # Enable drag-to-reorder
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        
+        # Store column names for menu
+        self.column_names = [
+            "Lookup", "Status", "Title", "Artist", "Album", "Year",
+            "Label", "Producer", "Rating", "Bitrate", "Format",
+            "Sample Rate", "Bit Depth", "Duration", "Play Count"
+        ]
+    
+    def _show_context_menu(self, pos: QPoint):
+        """Show context menu with column visibility options."""
+        logical_index = self.logicalIndexAt(pos)
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background: #2a2a2a;
+                color: #e0e0e0;
+                border: 1px solid #404040;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 24px 6px 12px;
+                border-radius: 2px;
+            }
+            QMenu::item:selected {
+                background: #4a9eff;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #404040;
+                margin: 4px 8px;
+            }
+        """)
+        
+        # Add "Show/Hide Columns" submenu
+        columns_menu = menu.addMenu("⋮ Columns")
+        
+        # Don't allow hiding first two columns (Lookup and Status)
+        for col in range(2, self.count()):
+            col_name = self.column_names[col] if col < len(self.column_names) else f"Column {col}"
+            action = columns_menu.addAction(col_name)
+            action.setCheckable(True)
+            action.setChecked(not self.isSectionHidden(col))
+            action.triggered.connect(lambda checked, c=col: self._toggle_column(c, checked))
+        
+        columns_menu.addSeparator()
+        
+        # Add "Reset Columns" option
+        reset_action = columns_menu.addAction("Reset to Default")
+        reset_action.triggered.connect(self._reset_columns)
+        
+        menu.exec(self.mapToGlobal(pos))
+    
+    def _toggle_column(self, col: int, visible: bool):
+        """Toggle column visibility."""
+        self.setSectionHidden(col, not visible)
+    
+    def _reset_columns(self):
+        """Reset all columns to visible and default order."""
+        # Show all columns
+        for col in range(self.count()):
+            self.setSectionHidden(col, False)
+        
+        # Reset to original order (requires moving sections back)
+        for visual_index in range(self.count()):
+            logical_index = self.logicalIndex(visual_index)
+            if logical_index != visual_index:
+                self.moveSection(self.visualIndex(visual_index), visual_index)
 
 
 class MainWindow(QMainWindow):
@@ -120,6 +207,11 @@ class MainWindow(QMainWindow):
         self.current_row = None
         self._current_position = "00:00"
         self._current_duration = "00:00"
+        self._current_position_ms = 0
+        self._current_duration_ms = 0
+        
+        # Master volume (multiplier for all tracks, default 100%)
+        self._master_volume = 1.0  # 0.0 to 1.0
         
         # Play state tracking for radio button indicators
         from .play_state_delegate import PlayStateDelegate
@@ -128,6 +220,7 @@ class MainWindow(QMainWindow):
         # Background analysis management
         self._analysis_worker = None
         self._pending_analysis_path = None
+        self._user_adjusted_volume = False  # Track manual volume changes
 
         # Library indexer
         try:
@@ -159,36 +252,40 @@ class MainWindow(QMainWindow):
             self.table.clicked.connect(self._on_table_play)
             self.table.delete_key_pressed.connect(self.on_remove_selected)
             
-            # Install custom delegate for play state indicator (column 0)
+            # Install custom delegate for play state indicator (now column 1)
             from .play_state_delegate import PlayStateDelegate
             self.play_state_delegate = PlayStateDelegate(self.table)
-            self.table.setItemDelegateForColumn(0, self.play_state_delegate)
+            self.table.setItemDelegateForColumn(1, self.play_state_delegate)  # Status column
             
-            # Configure columns for professional appearance with expanded metadata
-            from PySide6.QtWidgets import QHeaderView
+            # Configure columns with custom header for column management
+            custom_header = CustomTableHeader(Qt.Horizontal, self.table)
+            self.table.setHorizontalHeader(custom_header)
+            
             header = self.table.horizontalHeader()
             header.setStretchLastSection(True)  # Stretch last column to fill space
             
-            # Column resize modes (14 columns total now)
-            header.setSectionResizeMode(0, QHeaderView.Fixed)  # ● (play state) - fixed width
-            for col in range(1, 14):  # All other columns user-resizable
+            # Column resize modes (15 columns total now: Lookup + Status + 13 data columns)
+            header.setSectionResizeMode(0, QHeaderView.Fixed)  # Lookup (globe) - fixed width
+            header.setSectionResizeMode(1, QHeaderView.Fixed)  # Status (play indicator) - fixed width
+            for col in range(2, 15):  # All other columns user-resizable
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
             
             # Set initial column widths (optimized for new metadata fields)
-            self.table.setColumnWidth(0, 30)   # ● Play state indicator
-            self.table.setColumnWidth(1, 250)  # Title
-            self.table.setColumnWidth(2, 150)  # Artist
-            self.table.setColumnWidth(3, 150)  # Album
-            self.table.setColumnWidth(4, 50)   # Year
-            self.table.setColumnWidth(5, 120)  # Label
-            self.table.setColumnWidth(6, 120)  # Producer
-            self.table.setColumnWidth(7, 80)   # Rating (★★★★★)
-            self.table.setColumnWidth(8, 70)   # Bitrate
-            self.table.setColumnWidth(9, 60)   # Format
-            self.table.setColumnWidth(10, 80)  # Sample Rate
-            self.table.setColumnWidth(11, 70)  # Bit Depth
-            self.table.setColumnWidth(12, 60)  # Duration
-            self.table.setColumnWidth(13, 80)  # Play Count
+            self.table.setColumnWidth(0, 40)   # 🌐 Lookup (globe icon)
+            self.table.setColumnWidth(1, 30)   # ● Status (play state indicator)
+            self.table.setColumnWidth(2, 250)  # Title
+            self.table.setColumnWidth(3, 150)  # Artist
+            self.table.setColumnWidth(4, 150)  # Album
+            self.table.setColumnWidth(5, 50)   # Year
+            self.table.setColumnWidth(6, 120)  # Label
+            self.table.setColumnWidth(7, 120)  # Producer
+            self.table.setColumnWidth(8, 80)   # Rating (★★★★★)
+            self.table.setColumnWidth(9, 70)   # Bitrate
+            self.table.setColumnWidth(10, 60)  # Format
+            self.table.setColumnWidth(11, 80)  # Sample Rate
+            self.table.setColumnWidth(12, 70)  # Bit Depth
+            self.table.setColumnWidth(13, 60)  # Duration
+            self.table.setColumnWidth(14, 80)  # Play Count
             
             # Enable word wrap in headers for better text fit
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -224,11 +321,16 @@ class MainWindow(QMainWindow):
             central_layout.setContentsMargins(0, 0, 0, 0)
             central_layout.setSpacing(0)
             
-            # Panel 1: Song Queue & Info (collapsible, accordion style)
-            self.queue_panel = CollapsiblePanel("Song Queue & Info")
+            # Panel 1: Song Queue & Metadata (collapsible, accordion style)
+            self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
             self.queue_panel.set_content(self.table)
+            
+            # Make table expand to fill available space
+            from PySide6.QtWidgets import QSizePolicy
+            self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.table.setMinimumHeight(200)  # Minimum height when expanded
-            central_layout.addWidget(self.queue_panel)  # NO stretch - natural size
+            
+            central_layout.addWidget(self.queue_panel, stretch=1)  # Add stretch for vertical resizing
             
             # Panel 2: EQ & Waveform (collapsible, accordion style) - will be populated in _build_side_panel
             self.eq_panel = CollapsiblePanel("EQ & Waveform")
@@ -236,7 +338,7 @@ class MainWindow(QMainWindow):
             central_layout.addWidget(self.eq_panel)  # NO stretch - natural size
             
             # Panel 3: Search (collapsible, accordion style)
-            self.search_panel = CollapsiblePanel("Search")
+            self.search_panel = CollapsiblePanel("Artist Information & Search")
             if self.search_bar:
                 self.search_bar.setMinimumHeight(250)  # Minimum height for split search view
                 self.search_panel.set_content(self.search_bar)
@@ -333,18 +435,60 @@ class MainWindow(QMainWindow):
             }
             QLabel {
                 color: #c0c0c0;
+                background: transparent;
+                border: none;
             }
         """)
+    
+    def showEvent(self, event):
+        """Called when the window is shown. Auto-select first row if queue has items."""
+        super().showEvent(event)
+        
+        # Only do this once on first show
+        if not hasattr(self, '_initial_selection_done'):
+            self._initial_selection_done = True
+            
+            # Use a timer to ensure everything is fully initialized
+            QTimer.singleShot(100, self._do_initial_selection)
+    
+    def _do_initial_selection(self):
+        """Select and display info for the first track in the queue (without playing)."""
+        try:
+            if self.model.rowCount() > 0:
+                # Select the first row in the table
+                first_index = self.model.index(0, 2)  # Column 2 is Title
+                self.table.setCurrentIndex(first_index)
+                self.table.selectRow(0)
+                
+                # Trigger auto-search to show info in the search panel
+                paths = self.model.paths()
+                if paths and self.search_bar:
+                    path = paths[0]
+                    row_data = self.model.get_row_data(0)
+                    if row_data:
+                        title = row_data.get('title', '')
+                        artist = row_data.get('artist', '')
+                        if title and artist:
+                            self.search_bar.search_for_track(artist, title)
+                            print(f"[App] Auto-selected first track: {artist} - {title}")
+        except Exception as e:
+            print(f"[App] Failed to do initial selection: {e}")
 
     def _on_table_play(self, index):
         """
         Handle clicks on the queue table.
-        - Column 0 (radio button): Play/pause/resume control
+        - Column 0 (globe icon): Metadata lookup
+        - Column 1 (radio button): Play/pause/resume control
         - Other columns: Select row (no action)
         """
         try:
-            # Only respond to clicks on column 0 (play state indicator)
-            if index.column() != 0:
+            # Column 0: Metadata lookup (globe icon)
+            if index.column() == 0:
+                self._on_metadata_lookup(index.row())
+                return
+            
+            # Column 1: Play state indicator
+            if index.column() != 1:
                 return
             
             clicked_row = index.row()
@@ -357,6 +501,8 @@ class MainWindow(QMainWindow):
                 self.play_btn.setActive(False)
                 self.play_state_delegate.set_play_state(clicked_row, PlayStateDelegate.PLAY_STATE_PAUSED)
                 self._play_state = PlayStateDelegate.PLAY_STATE_PAUSED
+                # Stop LED meters when paused
+                self._update_led_meters_playback(False)
                 
             # Case 2: Clicking a paused row - RESUME playback
             elif clicked_row == self.current_row and self._play_state == PlayStateDelegate.PLAY_STATE_PAUSED:
@@ -365,6 +511,8 @@ class MainWindow(QMainWindow):
                 self.play_btn.setActive(True)
                 self.play_state_delegate.set_play_state(clicked_row, PlayStateDelegate.PLAY_STATE_PLAYING)
                 self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
+                # Start LED meters when resumed
+                self._update_led_meters_playback(True)
                 
             # Case 3: Clicking a different row - PLAY that track from beginning
             else:
@@ -403,8 +551,8 @@ class MainWindow(QMainWindow):
         self.player.durationChanged.connect(_on_duration)
         self.player.positionChanged.connect(_on_position)
 
-        # User seeking via waveform click → set player position
-        self.waveform.seekRequested.connect(lambda ms: self.player.set_position(ms))
+        # User seeking via waveform click → set player position AND start playback if stopped
+        self.waveform.seekRequested.connect(self._on_waveform_seek)
         
         # Wire collapsible panel signals to save state AND resize window (accordion style)
         if hasattr(self, 'queue_panel'):
@@ -413,6 +561,50 @@ class MainWindow(QMainWindow):
             self.eq_panel.collapsed.connect(lambda _: self._on_panel_toggled())
         if hasattr(self, 'search_panel'):
             self.search_panel.collapsed.connect(lambda _: self._on_panel_toggled())
+    
+    def _on_waveform_seek(self, ms: int):
+        """Handle seeking via waveform click. Start playback if stopped.
+        
+        Args:
+            ms: Seek position in milliseconds
+        """
+        from PySide6.QtMultimedia import QMediaPlayer
+        
+        # Check if we have any tracks in queue
+        if self.model.rowCount() == 0:
+            self.statusBar().showMessage("Queue is empty - add tracks first", 3000)
+            return
+        
+        # If not playing, start playback FIRST, then seek
+        if self.player._player.playbackState() != QMediaPlayer.PlayingState:
+            # If no track loaded, load first selected/current row
+            if self.current_row is None:
+                sel = self.table.selectionModel().selectedRows()
+                if sel:
+                    self._play_row(sel[0].row())
+                elif self.model.rowCount() > 0:
+                    self._play_row(0)
+                else:
+                    return
+                # Seek after loading new track
+                QTimer.singleShot(100, lambda: self.player.set_position(ms))
+                return
+            else:
+                # Resume or start playing current track
+                self.player._player.play()
+                self.play_btn.setActive(True)
+                self.statusBar().showMessage("Playing")
+                from .play_state_delegate import PlayStateDelegate
+                self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_PLAYING)
+                self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
+                # Start LED meters
+                self._update_led_meters_playback(True)
+                # Seek after starting playback (give player time to start)
+                QTimer.singleShot(100, lambda: self.player.set_position(ms))
+                return
+        
+        # Already playing - seek immediately
+        self.player.set_position(ms)
 
     def _build_toolbar(self):
         print("[SidecarEQ] Building toolbar…")
@@ -510,6 +702,8 @@ class MainWindow(QMainWindow):
         # LCD-style display inspired by retro alarm clocks and digital displays
         tb.addSeparator()
         self.metadata_label = QLabel("♪ No track loaded")
+        # Use a flatter background that matches the main window to remove
+        # the heavy shaded bounding box and make the display look cleaner.
         self.metadata_label.setStyleSheet("""
             QLabel {
                 color: #00ff00;
@@ -517,10 +711,9 @@ class MainWindow(QMainWindow):
                 font-size: 14px;
                 font-weight: bold;
                 padding: 8px 16px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #0a0f0a, stop:0.5 #0d140d, stop:1 #0a0f0a);
-                border: 2px solid #1a3a1a;
-                border-radius: 6px;
+                background: #1e1e1e; /* match main background */
+                border: 1px solid #2e2e2e; /* subtle divider instead of heavy border */
+                border-radius: 4px;
             }
         """)
         # Make it expand to fill available space (but allow text truncation with ...)
@@ -538,22 +731,22 @@ class MainWindow(QMainWindow):
     def _build_side_panel(self):
         """
         Build the waveform/EQ split panel.
-        This creates a horizontal split: Waveform (left 50%) | EQ sliders (right 50%)
+        This creates a horizontal split: Waveform+Volume (left 50%) | Playback+EQ (right 50%)
         The panel is inserted into the central layout between the queue table and search bar.
         """
         from PySide6.QtWidgets import (
             QWidget, QVBoxLayout, QLabel, QHBoxLayout, QSplitter
         )
 
-        # Create horizontal splitter for waveform | EQ
+        # Create horizontal splitter for waveform+volume | playback+EQ
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)  # Prevent collapsing panels
         
-        # === LEFT PANEL: Waveform (taller for better visualization) ===
+        # === LEFT PANEL: Waveform + Volume Control ===
         waveform_panel = QWidget()
         waveform_layout = QVBoxLayout()
         waveform_layout.setContentsMargins(8, 8, 8, 8)
-        waveform_layout.setSpacing(4)
+        waveform_layout.setSpacing(8)
         
         # Create waveform widget (moved from status bar)
         from .ui import WaveformProgress
@@ -561,13 +754,48 @@ class MainWindow(QMainWindow):
         self.waveform.setMinimumHeight(150)  # Taller than before (was 70px)
         self.waveform.setMaximumHeight(200)
         waveform_layout.addWidget(self.waveform)
+
+        # Volume control below waveform (horizontal BeamSlider with red glow)
+        volume_container = QWidget()
+        volume_container.setStyleSheet("background: transparent; border: none;")
+        volume_sub_layout = QVBoxLayout()
+        volume_sub_layout.setContentsMargins(0, 0, 0, 0)
+        volume_sub_layout.setSpacing(0)  # Minimal spacing
         
-        # Time label below waveform
-        self.timeLabel = QLabel("00:00 / 00:00")
-        self.timeLabel.setAlignment(Qt.AlignCenter)
-        self.timeLabel.setStyleSheet("color: #808080; font-size: 12px;")
-        waveform_layout.addWidget(self.timeLabel)
+        # Volume header with label and value display (compact)
+        vol_header_layout = QHBoxLayout()
+        vol_header_layout.setContentsMargins(0, 0, 0, 0)
         
+        volume_label = QLabel("VOLUME")
+        volume_label.setAlignment(Qt.AlignLeft)
+        volume_label.setStyleSheet("color: #ff4d4d; font-size: 9px; font-family: 'Helvetica'; font-weight: bold; background: transparent; border: none;")
+        vol_header_layout.addWidget(volume_label)
+        
+        vol_header_layout.addStretch()
+        
+        # Volume value display (0-10 scale)
+        self._volume_value_label = QLabel("5.0")  # Default to 5.0 (50%)
+        self._volume_value_label.setAlignment(Qt.AlignRight)
+        self._volume_value_label.setStyleSheet("color: #ff8888; font-size: 9px; font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif; font-weight: normal; background: transparent; border: none;")
+        vol_header_layout.addWidget(self._volume_value_label)
+        
+        volume_sub_layout.addLayout(vol_header_layout)
+        
+        # Volume slider (compact height)
+        from .ui import BeamSlider
+        self._volume_slider = BeamSlider(vertical=False, core_color=(220, 60, 60), glow_color=(220, 60, 60, 140), handle_color=(255, 200, 200))
+        self._volume_slider.setValue(50)  # Default to 50%
+        self._volume_slider.setFixedHeight(20)  # Even more compact
+        try:
+            self._volume_slider.released.connect(self._on_volume_released)
+        except Exception:
+            pass
+        self._volume_slider.valueChanged.connect(self._on_volume_changed_realtime)
+        volume_sub_layout.addWidget(self._volume_slider)
+        
+        volume_container.setLayout(volume_sub_layout)
+        waveform_layout.addWidget(volume_container)
+
         waveform_panel.setLayout(waveform_layout)
         waveform_panel.setStyleSheet("""
             QWidget {
@@ -592,89 +820,101 @@ class MainWindow(QMainWindow):
         eq_main_layout.setContentsMargins(8, 8, 8, 8)
         eq_main_layout.setSpacing(4)
         
-        # Volume control at top (separate from EQ) - horizontal slider for responsiveness
-        volume_container = QWidget()
-        volume_container.setStyleSheet("background: transparent; border: none;")
-        volume_layout = QVBoxLayout()
-        volume_layout.setContentsMargins(0, 0, 0, 8)
-        volume_layout.setSpacing(2)
+        # === PLAYBACK CONTROLS at top (Rate, Treble Boost, etc.) ===
+        playback_container = QWidget()
+        playback_container.setStyleSheet("background: transparent; border: none;")
+        playback_layout = QVBoxLayout()
+        playback_layout.setContentsMargins(0, 0, 0, 0)
+        playback_layout.setSpacing(2)
         
-        # Volume header with label and value display
-        vol_header_layout = QHBoxLayout()
-        vol_header_layout.setContentsMargins(0, 0, 0, 0)
+        # TODO: Add playback rate control, treble boost, loudness, etc.
+        # Placeholder container for future controls - no labels yet to save vertical space
         
-        volume_label = QLabel("VOLUME")
-        volume_label.setAlignment(Qt.AlignLeft)
-        volume_label.setStyleSheet("color: #ff4d4d; font-size: 10px; font-family: 'Helvetica'; font-weight: bold; background: transparent; border: none;")
-        vol_header_layout.addWidget(volume_label)
-        
-        vol_header_layout.addStretch()
-        
-        # Volume value display (0-10 scale)
-        self._volume_value_label = QLabel("7.5")
-        self._volume_value_label.setAlignment(Qt.AlignRight)
-        self._volume_value_label.setStyleSheet("color: #ff8888; font-size: 9px; font-family: 'Courier New'; background: transparent; border: none;")
-        vol_header_layout.addWidget(self._volume_value_label)
-        
-        volume_layout.addLayout(vol_header_layout)
-        
-        # Horizontal volume slider - more responsive
-        from PySide6.QtWidgets import QSlider
-        self._volume_slider = QSlider(Qt.Horizontal)
-        self._volume_slider.setRange(0, 100)
-        self._volume_slider.setValue(75)  # Default 75% volume
-        self._volume_slider.setFixedHeight(30)
-        self._volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: #0a0a0a;
-                height: 8px;
-                border: 1px solid #1a1a1a;
-                border-radius: 4px;
-            }
-            QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #ff6666, stop:0.5 #ff3333, stop:1 #cc0000);
-                border-radius: 4px;
-            }
-            QSlider::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #505050, stop:0.5 #606060, stop:1 #505050);
-                width: 18px;
-                margin: -5px 0;
-                border: 1px solid #2a2a2a;
-                border-radius: 9px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #606060, stop:0.5 #707070, stop:1 #606060);
-                border: 1px solid #ff4d4d;
-            }
-        """)
-        # Use sliderReleased instead of valueChanged for better performance
-        self._volume_slider.sliderReleased.connect(self._on_volume_released)
-        # But still update in real-time for immediate feedback
-        self._volume_slider.valueChanged.connect(self._on_volume_changed_realtime)
-        volume_layout.addWidget(self._volume_slider)
-        
-        volume_container.setLayout(volume_layout)
-        eq_main_layout.addWidget(volume_container)
-        
-        # Separator line
-        sep = QWidget()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet("background: #2a2a2a;")
-        eq_main_layout.addWidget(sep)
+        playback_container.setLayout(playback_layout)
+        eq_main_layout.addWidget(playback_container)
         
         # EQ sliders container (7 sliders only - no volume)
-        from PySide6.QtWidgets import QHBoxLayout as HB
+        from PySide6.QtWidgets import QHBoxLayout as HB, QCheckBox
         eq_x_offset = 12
+        
+        # LED meter toggle checkbox with Save button on the right
+        led_checkbox_layout = QHBoxLayout()
+        led_checkbox_layout.setContentsMargins(eq_x_offset, 0, eq_x_offset, 8)
+        self._led_meter_checkbox = QCheckBox("Show LED Meters")
+        self._led_meter_checkbox.setChecked(True)  # On by default
+        self._led_meter_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #808080;
+                font-size: 9px;
+                font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif;
+                background: transparent;
+                border: none;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                background: #1a1a1a;
+                border: 1px solid #3a3a3a;
+                border-radius: 2px;
+            }
+            QCheckBox::indicator:checked {
+                background: #4d88ff;
+                border: 1px solid #6699ff;
+            }
+        """)
+        self._led_meter_checkbox.stateChanged.connect(self._toggle_led_meters)
+        led_checkbox_layout.addWidget(self._led_meter_checkbox)
+        led_checkbox_layout.addStretch()
+        
+        # Save Settings button (pushbutton.svg icon) - compact, inline
+        self._save_settings_btn = QPushButton()
+        self._save_settings_btn.setToolTip("Save EQ Settings")
+        
+        # Load the pushbutton.svg icon
+        from pathlib import Path
+        icon_path = Path(__file__).parent.parent / "icons" / "pushbutton.svg"
+        if icon_path.exists():
+            from PySide6.QtGui import QIcon
+            from PySide6.QtCore import QSize
+            self._save_settings_btn.setIcon(QIcon(str(icon_path)))
+            self._save_settings_btn.setIconSize(QSize(32, 32))
+        
+        self._save_settings_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                padding: 0px;
+                min-width: 32px;
+                max-width: 32px;
+                min-height: 32px;
+                max-height: 32px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 10);
+                border-radius: 16px;
+            }
+            QPushButton:pressed {
+                background: rgba(0, 0, 0, 20);
+                border-radius: 16px;
+            }
+            QPushButton:disabled {
+                opacity: 0.3;
+            }
+        """)
+        self._save_settings_btn.setEnabled(False)
+        self._save_settings_btn.clicked.connect(self._on_save_settings_clicked)
+        led_checkbox_layout.addWidget(self._save_settings_btn)
+        
+        eq_main_layout.addLayout(led_checkbox_layout)
+        
         eq_layout = HB()
         eq_layout.setContentsMargins(eq_x_offset, 14, eq_x_offset, 14)
         eq_layout.setSpacing(16)  # Slightly more compact
 
         self._eq_sliders = []
-        
-        # 70s receiver-style VU meters with blue glow
+        self._led_meters = []  # Store LED meter widgets
+
+        # 70s receiver-style VU meters with blue glow (fallback style for QSlider)
         slider_css_blue_vu = (
             # The groove (VU meter track) - dark recessed
             "QSlider::groove:vertical { "
@@ -713,30 +953,64 @@ class MainWindow(QMainWindow):
 
         # Create 7 EQ sliders with value labels (no volume - that's separate now)
         self._eq_value_labels = []  # Store value labels
+        from .ui import BeamSlider
         for i in range(7):
             # Container for slider + value label
             slider_container = QWidget()
             slider_layout = QVBoxLayout()
             slider_layout.setContentsMargins(0, 0, 0, 0)
             slider_layout.setSpacing(2)
-            
+
             # Value label (shows current dB value)
             value_label = QLabel("+0")
             value_label.setAlignment(Qt.AlignCenter)
-            value_label.setStyleSheet("color: #6699cc; font-size: 8px; font-family: 'Courier New'; background: transparent; border: none;")
+            value_label.setStyleSheet("color: #6699cc; font-size: 8px; font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif; font-weight: normal; background: transparent; border: none;")
             slider_layout.addWidget(value_label)
             self._eq_value_labels.append(value_label)
+
+            # Create LED meter + slider combo with overlaid layout
+            combo_widget = QWidget()
+            combo_widget.setStyleSheet("background: transparent; border: none;")
+            combo_layout = QVBoxLayout()
+            combo_layout.setContentsMargins(0, 0, 0, 0)
+            combo_layout.setSpacing(0)
             
-            # Slider
-            s = QSlider(Qt.Vertical)
-            s.setRange(-12, 12)
-            s.setValue(0)
-            s.setStyleSheet(slider_css_blue_vu)
-            s.valueChanged.connect(lambda val, idx=i: self._on_eq_changed_with_label(val, idx))
-            s.setFixedHeight(120)  # Shorter since volume is separate
-            slider_layout.addWidget(s)
+            # LED meter behind slider (will be Z-order below)
+            from .ui import LEDMeter
+            led_meter = LEDMeter(color_scheme='blue', num_segments=20)
+            led_meter.setFixedHeight(120)
+            led_meter.setMaximumWidth(18)
+            led_meter.enable_simulation(False)  # Start disabled (no audio playing initially)
+            self._led_meters.append(led_meter)
+            
+            # Use BeamSlider for all EQ bands for consistent look
+            try:
+                s = BeamSlider()
+                # Connect BeamSlider 0..100 -> -12..12 for label updates
+                s.valueChanged.connect(lambda v, idx=i: self._on_eq_changed_with_label(int(round((v/100.0)*24 - 12)), idx))
+                s.setFixedHeight(120)
+            except Exception:
+                # Fallback to older QSlider style if BeamSlider import fails
+                s = QSlider(Qt.Vertical)
+                s.setRange(-12, 12)
+                s.setValue(0)
+                s.setStyleSheet(slider_css_blue_vu)
+                s.valueChanged.connect(lambda val, idx=i: self._on_eq_changed_with_label(val, idx))
+                s.setFixedHeight(120)
+            
+            # Stack LED meter and slider using QStackedLayout for true overlay
+            from PySide6.QtWidgets import QStackedLayout
+            stack_container = QWidget()
+            stack_container.setFixedHeight(120)
+            stack_layout = QStackedLayout()
+            stack_layout.setStackingMode(QStackedLayout.StackAll)  # All widgets visible
+            stack_layout.addWidget(led_meter)  # Background layer
+            stack_layout.addWidget(s)  # Foreground layer (slider)
+            stack_container.setLayout(stack_layout)
+            
+            slider_layout.addWidget(stack_container)
             self._eq_sliders.append(s)
-            
+
             slider_container.setLayout(slider_layout)
             eq_layout.addWidget(slider_container)
 
@@ -749,7 +1023,7 @@ class MainWindow(QMainWindow):
         for freq in ["60 Hz", "150 Hz", "400 Hz", "1 kHz", "2.4 kHz", "6 kHz", "15 kHz"]:
             label = QLabel(freq)
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("color: #808080; font-size: 9px; font-family: 'Helvetica'; font-weight: normal; background: transparent; border: none;")
+            label.setStyleSheet("color: #808080; font-size: 8px; font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif; font-weight: normal; background: transparent; border: none;")
             freq_layout.addWidget(label)
         eq_main_layout.addLayout(freq_layout)
         
@@ -765,6 +1039,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'eq_panel'):
             self.eq_panel.set_content(splitter)
 
+        # Apply initial audio defaults (80%) for volume and EQ on first run
+        try:
+            QTimer.singleShot(0, self._set_initial_audio_settings)
+        except Exception:
+            pass
+
     def _on_volume_changed_realtime(self, val):
         """Handle real-time volume changes for immediate audio feedback (no saving)."""
         try:
@@ -773,19 +1053,22 @@ class MainWindow(QMainWindow):
                 scaled_value = val / 10.0  # 0-100 -> 0.0-10.0
                 self._volume_value_label.setText(f"{scaled_value:.1f}")
             
-            if hasattr(self.player, 'set_volume'):
-                self.player.set_volume(val / 100.0)
+            # Apply volume: song volume (val) × master volume
+            if hasattr(self, 'player') and hasattr(self.player, 'set_volume'):
+                final_volume = (val / 100.0) * self._master_volume
+                self.player.set_volume(final_volume)
+                print(f"[App] Volume: track={val}% × master={self._master_volume*100:.0f}% = {final_volume*100:.0f}%")
         except Exception as e:
             print(f"[App] ERROR setting volume: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _on_volume_released(self):
-        """Handle volume slider release - save the final value."""
+        """Handle volume slider release - NO auto-save, just mark as user-adjusted."""
         val = self._volume_slider.value()
-        print(f"[App] Volume released at: {val}")
-        try:
-            self._save_volume_for_current_track(val)
-        except Exception as e:
-            print(f"[App] Failed to save volume: {e}")
+        print(f"[App] Volume released at: {val} (not saved - click Save button)")
+        # Mark that user manually changed volume (to prevent analysis from overwriting)
+        self._user_adjusted_volume = True
 
     def _on_volume_changed(self, val):
         """Legacy method - now just for compatibility."""
@@ -805,9 +1088,11 @@ class MainWindow(QMainWindow):
         act_save_eq = QAction("Save Song EQ", self); act_save_eq.triggered.connect(self._safe_save_eq)
         act_index_folder = QAction("Index Music Folder for Search…", self); act_index_folder.triggered.connect(self.on_index_folder)
         act_quit = QAction("Quit", self); act_quit.setShortcut(QKeySequence.Quit); act_quit.triggered.connect(lambda: QApplication.instance().quit())
+        # Add all items except Quit, then separator, then Quit at bottom (customary)
         for a in [act_add_files, act_add_folder, act_save_pl, act_load_pl, act_refresh_meta, act_save_eq, act_index_folder]:
             m_file.addAction(a)
-        m_file.addSeparator(); m_file.addAction(act_quit)
+        m_file.addSeparator()
+        m_file.addAction(act_quit)
 
         # Playback menu
         m_play = mb.addMenu("Playback")
@@ -816,9 +1101,28 @@ class MainWindow(QMainWindow):
         act_next = QAction("Next", self); act_next.setShortcut(QKeySequence.MoveToNextWord); act_next.triggered.connect(self.on_next)
         for a in [act_play, act_stop, act_next]: m_play.addAction(a)
 
-        # View menu (EQ Opacity)
+        # View menu (EQ Opacity + Master Volume)
         m_view = mb.addMenu("View")
+        
+        # Master Volume submenu
+        m_master_vol = m_view.addMenu("Master Volume")
         from PySide6.QtGui import QActionGroup
+        vol_grp = QActionGroup(self); vol_grp.setExclusive(True)
+        self._master_volume_actions = {}
+        def _add_master_vol(name, val):
+            act = QAction(name, self); act.setCheckable(True)
+            act.triggered.connect(lambda: self._set_master_volume(val))
+            vol_grp.addAction(act); m_master_vol.addAction(act); self._master_volume_actions[name] = act
+        _add_master_vol("Master Volume • 25%", 0.25)
+        _add_master_vol("Master Volume • 50%", 0.50)
+        _add_master_vol("Master Volume • 75%", 0.75)
+        _add_master_vol("Master Volume • 100% (Default)", 1.00)
+        # Default to 100%
+        self._master_volume_actions["Master Volume • 100% (Default)"].setChecked(True)
+        
+        m_view.addSeparator()
+        
+        # EQ Opacity submenu
         grp = QActionGroup(self); grp.setExclusive(True)
         self._eq_opacity_actions = {}
         def _add_opc(name, val):
@@ -857,8 +1161,38 @@ class MainWindow(QMainWindow):
                 self._eq_opacity_effect = eff
                 bg.setGraphicsEffect(eff)
             eff.setOpacity(max(0.0, min(1.0, float(level))))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[App] Error setting EQ opacity: {e}")
+
+    def _set_master_volume(self, level: float):
+        """Set master volume multiplier (affects all tracks)."""
+        try:
+            self._master_volume = max(0.0, min(1.0, float(level)))
+            print(f"[App] Master volume set to {self._master_volume*100:.0f}%")
+            # Re-apply current track volume to reflect new master volume
+            if hasattr(self, '_volume_slider'):
+                current_track_vol = self._volume_slider.value()
+                final_volume = (current_track_vol / 100.0) * self._master_volume
+                if hasattr(self, 'player') and hasattr(self.player, 'set_volume'):
+                    self.player.set_volume(final_volume)
+                    print(f"[App] Applied: track={current_track_vol}% × master={self._master_volume*100:.0f}% = {final_volume*100:.0f}%")
+        except Exception as e:
+            print(f"[App] Error setting master volume: {e}")
+    
+    def _on_save_settings_clicked(self):
+        """Handle Save Settings button click - save EQ and volume for current track."""
+        if self.current_row is None:
+            self.statusBar().showMessage("No track loaded - nothing to save", 3000)
+            return
+        
+        try:
+            # Save both EQ and volume
+            self.save_eq_for_current_track()
+            self.statusBar().showMessage("✓ Settings saved for this track!", 3000)
+            print(f"[App] User clicked Save - settings saved for track at row {self.current_row}")
+        except Exception as e:
+            self.statusBar().showMessage(f"Failed to save settings: {e}", 5000)
+            print(f"[App] Save settings failed: {e}")
 
     # --- Toolbar handlers ---
     def on_play(self):
@@ -873,6 +1207,8 @@ class MainWindow(QMainWindow):
             # Update play state indicator to show paused (blinking)
             if self.current_row is not None:
                 self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_PAUSED)
+            # Stop LED meters when paused
+            self._update_led_meters_playback(False)
         else:
             # Check if we're in paused state (track loaded but not playing)
             if self.current_row is not None and self.player._player.playbackState() == QMediaPlayer.PausedState:
@@ -882,6 +1218,8 @@ class MainWindow(QMainWindow):
                 self.play_btn.setActive(True)
                 # Update play state indicator back to playing
                 self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_PLAYING)
+                # Start LED meters when resumed
+                self._update_led_meters_playback(True)
             elif self.current_row is None:
                 # No track loaded - start from selected or first row
                 sel = self.table.selectionModel().selectedRows()
@@ -916,6 +1254,9 @@ class MainWindow(QMainWindow):
         self.player.stop()
         self.statusBar().showMessage("Stopped")
         self.play_btn.setActive(False)
+        
+        # Stop LED meters when stopped
+        self._update_led_meters_playback(False)
 
     def on_next(self):
         if self.current_row is None:
@@ -1097,26 +1438,29 @@ class MainWindow(QMainWindow):
             self.music_dir_combo.clear()
             
             # If we have recent dirs, show the most recent one as the default/current selection
-            if recent_dirs and Path(recent_dirs[-1]).exists():
-                current_dir = recent_dirs[-1]
-                display_name = self._shorten_path(current_dir)
-                # Show current folder at top (will be selected by default)
-                self.music_dir_combo.addItem(f"♪ {display_name}", current_dir)
-                
-                # Add "Choose different folder..." option
-                self.music_dir_combo.addItem("📁 Choose Different Folder...")
-                
-                # Add other recent directories (excluding the current one)
-                for dir_path in reversed(recent_dirs[-10:]):  # Last 10 directories, newest first
-                    if dir_path != current_dir and Path(dir_path).exists():
-                        display_name = self._shorten_path(dir_path)
-                        self.music_dir_combo.addItem(f"  {display_name}", dir_path)
-                
-                # Keep index 0 selected (current folder)
-                self.music_dir_combo.setCurrentIndex(0)
-            else:
-                # No recent dirs - just show "Choose Folder..."
-                self.music_dir_combo.addItem("📁 Choose Music Folder...")
+            # Prefer the last used directory if available, otherwise default to the user's home folder
+            current_dir = None
+            if recent_dirs:
+                cand = recent_dirs[-1]
+                if Path(cand).exists():
+                    current_dir = cand
+            if current_dir is None:
+                current_dir = str(Path.home())
+
+            display_name = self._shorten_path(current_dir)
+            # Show current folder at top (will be selected by default)
+            self.music_dir_combo.addItem(f"♪ {display_name}", current_dir)
+            # Add "Choose different folder..." option
+            self.music_dir_combo.addItem("📁 Choose Different Folder...")
+            
+            # Add other recent directories (excluding the current one)
+            for dir_path in reversed(recent_dirs[-10:]):  # Last 10 directories, newest first
+                if dir_path != current_dir and Path(dir_path).exists():
+                    display_name = self._shorten_path(dir_path)
+                    self.music_dir_combo.addItem(f"  {display_name}", dir_path)
+            
+            # Keep index 0 selected (current folder)
+            self.music_dir_combo.setCurrentIndex(0)
             
         except Exception as e:
             print(f"[App] Failed to load recent music dirs: {e}")
@@ -1308,9 +1652,176 @@ class MainWindow(QMainWindow):
             f"Try typing an artist or song name. 🔍"
         )
 
+    def _set_initial_audio_settings(self):
+        """Initialize volume and EQ sliders to sensible defaults.
+        
+        This is called on app startup to set global defaults (80% volume, neutral EQ).
+        These defaults will be overridden when:
+        - A track is loaded that has saved analysis data
+        - Real-time analysis completes for a track
+        """
+        try:
+            # Set global default volume to 50% (0..100 scale) - was 80%, too loud!
+            if hasattr(self, '_volume_slider') and self._volume_slider:
+                try:
+                    self._volume_slider.blockSignals(True)  # Don't trigger save
+                    self._volume_slider.setValue(50)  # Reduced from 80
+                    self._volume_slider.blockSignals(False)
+                except Exception:
+                    pass
+                try:
+                    self._volume_value_label.setText(f"{(50/10):.1f}")  # Display 5.0
+                except Exception:
+                    pass
+
+            # Set global default EQ to 50 (BeamSlider 0..100, maps to 0dB = flat)
+            # Flat EQ is a better default than boosted
+            for s in getattr(self, '_eq_sliders', []):
+                try:
+                    s.blockSignals(True)  # Don't trigger save
+                    s.setValue(50)  # 50 = 0dB (flat response)
+                    s.blockSignals(False)
+                except Exception:
+                    pass
+
+            # Update value labels (map 0..100 to -12..12 dB)
+            for idx, lbl in enumerate(getattr(self, '_eq_value_labels', [])):
+                try:
+                    slider = self._eq_sliders[idx]
+                    v = slider.value()
+                    db = int(round((v/100.0)*24 - 12))
+                    lbl.setText(f"{db:+d}")
+                except Exception:
+                    pass
+
+            # Apply to audio backend if present
+            try:
+                if hasattr(self.player, 'set_volume'):
+                    self.player.set_volume(0.5)  # 50% volume
+            except Exception:
+                pass
+            
+            print("[App] 🎚️  Set global defaults: 80% volume, +4.8dB EQ (will be overridden by track analysis)")
+        except Exception as e:
+            print(f"[App] Failed to set initial audio settings: {e}")
+
     def _auto_refresh_metadata(self):
         """Silently refresh metadata on startup without status message."""
         self._refresh_metadata_internal(show_message=False)
+    
+    def _on_metadata_lookup(self, row: int):
+        """Lookup and update metadata for a specific track from online sources.
+        
+        Args:
+            row: Row index in the queue table
+        """
+        try:
+            if not self.model or row < 0 or row >= len(self.model._rows):
+                return
+            
+            row_data = self.model._rows[row]
+            path = row_data.get('path', '')
+            
+            # Skip URLs (can't lookup metadata for streams)
+            if path.startswith(('http://', 'https://')):
+                self.statusBar().showMessage("Metadata lookup not available for URLs/streams")
+                return
+            
+            # Get current metadata for search
+            title = row_data.get('title') or Path(path).stem
+            artist = row_data.get('artist', '')
+            album = row_data.get('album', '')
+            
+            # Show status
+            self.statusBar().showMessage(f"Looking up metadata for: {title}...")
+            print(f"[App] 🌐 Metadata lookup: {title} - {artist}")
+            
+            # For now, use simple online search approach
+            # Fetch online metadata using Wikipedia, MusicBrainz, and Last.fm
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QPushButton
+            from .online_metadata import get_metadata_fetcher
+            
+            # Create a dialog to show the results
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Online Metadata: {artist}")
+            dialog.resize(600, 500)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Text browser for rich HTML content
+            browser = QTextBrowser()
+            browser.setOpenExternalLinks(True)  # Allow clicking links
+            browser.setStyleSheet("""
+                QTextBrowser {
+                    background-color: #1e1e1e;
+                    color: #e0e0e0;
+                    border: 1px solid #404040;
+                    border-radius: 4px;
+                }
+            """)
+            
+            # Show loading message first
+            browser.setHtml("""
+                <html>
+                <body style="font-family: Arial; color: #e0e0e0; padding: 20px;">
+                    <h2 style="color: #4a9eff;">🔍 Fetching metadata...</h2>
+                    <p>Querying Wikipedia, MusicBrainz, and Last.fm for artist information...</p>
+                </body>
+                </html>
+            """)
+            
+            layout.addWidget(browser)
+            
+            # Button box
+            button_box = QDialogButtonBox(QDialogButtonBox.Close)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+            
+            # Show dialog (non-blocking)
+            dialog.show()
+            
+            # Fetch metadata in background (we'll use a simple approach for now)
+            # In a production app, you'd use QThread or async to avoid blocking the UI
+            self.statusBar().showMessage(f"Fetching online metadata for '{artist}'...")
+            
+            try:
+                fetcher = get_metadata_fetcher()
+                info = fetcher.fetch_artist_info(artist, title)
+                
+                # Build local metadata dict for context
+                local_meta = {
+                    'title': title,
+                    'artist': artist,
+                    'album': album,
+                    'path': path
+                }
+                
+                # Format as HTML and display
+                html = fetcher.format_artist_info_html(info, local_meta)
+                browser.setHtml(html)
+                
+                if info:
+                    source = info.get('source', 'online')
+                    self.statusBar().showMessage(f"Metadata fetched from {source}", 3000)
+                else:
+                    self.statusBar().showMessage("No online metadata found", 3000)
+                    
+            except Exception as e:
+                browser.setHtml(f"""
+                    <html>
+                    <body style="font-family: Arial; color: #e0e0e0; padding: 20px;">
+                        <h2 style="color: #ff6b6b;">❌ Error fetching metadata</h2>
+                        <p>{str(e)}</p>
+                        <p style="color: #999;">Make sure you have an internet connection.</p>
+                    </body>
+                    </html>
+                """)
+                self.statusBar().showMessage(f"Metadata fetch failed: {e}", 3000)
+                print(f"[App] Metadata fetch error: {e}")
+            
+        except Exception as e:
+            print(f"[App] Error in metadata lookup: {e}")
+            self.statusBar().showMessage(f"Metadata lookup failed: {e}")
     
     def on_refresh_metadata(self):
         """Re-scan all tracks in the queue and update their metadata."""
@@ -1466,6 +1977,9 @@ class MainWindow(QMainWindow):
             self._analysis_worker.stop_analysis()
             self._pending_analysis_path = None
         
+        # Reset user volume adjustment flag for new track
+        self._user_adjusted_volume = False
+        
         self.current_row = row
         
         # Get the track info to handle both local files, URLs, and Plex streams
@@ -1525,7 +2039,23 @@ class MainWindow(QMainWindow):
             self.play_state_delegate.set_play_state(row, PlayStateDelegate.PLAY_STATE_PLAYING)
             self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
             
-            title = self.model.data(self.model.index(row, 1))  # Title is now column 1 (was 0)
+            # Enable Save button since we have a loaded track
+            if hasattr(self, '_save_settings_btn'):
+                self._save_settings_btn.setEnabled(True)
+            
+            # Start LED meters if they're visible and enabled
+            self._update_led_meters_playback(True)
+            
+            title = self.model.data(self.model.index(row, 2))  # Title is now column 2
+            artist = self.model.data(self.model.index(row, 3)) or ""  # Artist is column 3
+            album = self.model.data(self.model.index(row, 4)) or ""  # Album is column 4
+            
+            # Auto-search for the currently playing track to show related songs
+            if hasattr(self, 'search_bar') and self.search_bar:
+                try:
+                    self.search_bar.search_for_track(title or "Unknown", artist, album)
+                except Exception as e:
+                    print(f"[App] Failed to auto-search: {e}")
             
             # Show source type in status
             source_labels = {'local': '', 'url': 'from URL', 'plex': 'from Plex', 'video': 'from video'}
@@ -1537,13 +2067,19 @@ class MainWindow(QMainWindow):
             self._increment_play_count(identifier)
             
             # Handle EQ and analysis based on source type
-            if source_type in ('plex', 'url'):
+            # ALWAYS load saved settings first (prioritize manual saves)
+            saved_data = self.load_eq_for_track(identifier)
+            saved_volume = saved_data.get('suggested_volume') if saved_data else None
+            has_manual_save = saved_data.get('manual_save', False) if saved_data else False
+            
+            # If user manually saved settings, ALWAYS use those (skip analysis)
+            if has_manual_save and saved_data:
+                print(f"[App] ✓ Loading manually saved settings for: {Path(identifier).stem}")
+                self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
+            elif source_type in ('plex', 'url'):
                 # Streaming sources: just load saved settings (no analysis possible)
-                eq_data = self.load_eq_for_track(identifier)
-                if eq_data:
-                    self._apply_eq_settings(eq_data.get('gains_db', [0]*7))
-                    if 'suggested_volume' in eq_data:
-                        self._apply_volume_setting(eq_data['suggested_volume'])
+                if saved_data:
+                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
                     print(f"[App] Loaded saved EQ settings for streaming source: {Path(identifier).stem}")
                 else:
                     # Reset to flat EQ for new streaming sources
@@ -1562,24 +2098,25 @@ class MainWindow(QMainWindow):
                     # Reset to flat EQ if no analysis available
                     self._apply_eq_settings([0]*7)
             else:
-                # Regular local audio files: Check if we have saved EQ for this track, otherwise analyze
-                eq_data = self._get_or_analyze_eq(identifier)
-                if eq_data:
-                    self._apply_eq_settings(eq_data.get('gains_db', [0]*7))
+                # Regular local audio files: Load saved settings or analyze
+                if saved_data:
+                    # Use saved settings (from previous analysis or manual save)
+                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
+                    print(f"[App] ✓ Loaded saved EQ for: {Path(identifier).stem}")
                 else:
-                    # Reset to flat EQ if no analysis available
-                    self._apply_eq_settings([0]*7)
-                
-                # Always check for saved volume, independent of EQ data
-                # This ensures manually-set volumes are preserved even before analysis
-                print(f"[App] 🔍 Looking up settings for: {identifier}")
-                saved_data = self.load_eq_for_track(identifier)
-                if saved_data and 'suggested_volume' in saved_data:
-                    self._apply_volume_setting(saved_data['suggested_volume'])
-                else:
-                    # No saved volume - use default 75% for new tracks
-                    print(f"[App] ⚠️  No saved volume found, defaulting to 75%")
-                    self._apply_volume_setting(75)
+                    # No saved settings - start background analysis
+                    print(f"[App] No saved settings - starting analysis for: {Path(identifier).stem}")
+                    self._apply_eq_settings([0]*7)  # Flat EQ while analyzing
+                    self._start_background_analysis(identifier)
+            
+            # Apply saved volume for ALL source types (not just local files)
+            if saved_volume is not None:
+                print(f"[App] ✓ Loading saved volume: {saved_volume}%")
+                self._apply_volume_setting(saved_volume)
+            else:
+                # No saved volume - use default 75% for new tracks
+                print(f"[App] ⚠️  No saved volume found, defaulting to 75%")
+                self._apply_volume_setting(75)
                 
         except Exception as e:
             QMessageBox.warning(self, "Play error", str(e))
@@ -1640,12 +2177,15 @@ class MainWindow(QMainWindow):
                 if eq_data:
                     self._apply_eq_settings(eq_data)
                 
-                # Apply volume suggestion
-                analysis_data = analysis_result.get('analysis_data', {})
-                if 'suggested_volume' in analysis_data:
-                    self._apply_volume_setting(analysis_data['suggested_volume'])
+                # Apply volume suggestion ONLY if user hasn't manually adjusted it
+                if not self._user_adjusted_volume:
+                    analysis_data = analysis_result.get('analysis_data', {})
+                    if 'suggested_volume' in analysis_data:
+                        self._apply_volume_setting(analysis_data['suggested_volume'])
+                else:
+                    print(f"[App] Skipping volume from analysis (user adjusted manually)")
                 
-                lufs = analysis_data.get('loudness_lufs', -23)
+                lufs = analysis_result.get('analysis_data', {}).get('loudness_lufs', -23)
                 self.statusBar().showMessage(f"Playing: {Path(path).stem} (analyzed: {lufs:.1f} LUFS - settings applied)")
                 print(f"[App] Applied real-time analysis for: {Path(path).stem}")
             
@@ -1678,11 +2218,16 @@ class MainWindow(QMainWindow):
                 self._volume_slider.setValue(volume)
                 self._volume_slider.blockSignals(False)
                 
+                # UPDATE LABEL to match slider (signals are blocked so realtime handler won't fire)
+                if hasattr(self, '_volume_value_label'):
+                    scaled_value = volume / 10.0  # 0-100 -> 0.0-10.0
+                    self._volume_value_label.setText(f"{scaled_value:.1f}")
+                
                 # Apply to player immediately
                 if hasattr(self.player, 'set_volume'):
                     self.player.set_volume(volume / 100.0)
                 
-                print(f"[App] 📻 LOADED volume {volume}%")
+                print(f"[App] 📻 LOADED volume {volume}% (display: {volume/10.0:.1f})")
         except Exception as e:
             print(f"[App] Failed to apply volume: {e}")
     
@@ -1711,23 +2256,98 @@ class MainWindow(QMainWindow):
             print(f"[App] Error saving volume: {e}")
     
     def _apply_eq_settings(self, gains_db: list):
-        """Apply EQ settings to the sliders and update value labels."""
+        """Apply EQ settings to the sliders and update value labels.
+        
+        Args:
+            gains_db: List of EQ gains in dB (-12 to +12 range)
+        """
         try:
             if hasattr(self, '_eq_sliders') and len(gains_db) >= len(self._eq_sliders):
                 for i, slider in enumerate(self._eq_sliders):
                     if i < len(gains_db):
-                        # Clamp to slider range (-12 to +12)
-                        value = max(-12, min(12, int(gains_db[i])))
-                        slider.setValue(value)
+                        # Clamp to dB range (-12 to +12)
+                        db_value = max(-12, min(12, int(gains_db[i])))
+                        
+                        # Convert dB to BeamSlider 0..100 scale
+                        # -12dB -> 0, 0dB -> 50, +12dB -> 100
+                        slider_value = int(round(((db_value + 12) / 24.0) * 100))
+                        
+                        # Block signals to prevent saving during load
+                        slider.blockSignals(True)
+                        slider.setValue(slider_value)
+                        slider.blockSignals(False)
                         
                         # Update the value label too
                         if hasattr(self, '_eq_value_labels') and i < len(self._eq_value_labels):
-                            if value >= 0:
-                                self._eq_value_labels[i].setText(f"+{value}")
+                            if db_value >= 0:
+                                self._eq_value_labels[i].setText(f"+{db_value}")
                             else:
-                                self._eq_value_labels[i].setText(f"{value}")
+                                self._eq_value_labels[i].setText(f"{db_value}")
         except Exception as e:
             print(f"[App] Failed to apply EQ: {e}")
+    
+    def _update_led_meters_playback(self, is_playing: bool):
+        """Enable/disable LED meter simulation based on playback state.
+        
+        Args:
+            is_playing: True if audio is playing, False otherwise
+        """
+        try:
+            if not hasattr(self, '_led_meters') or not hasattr(self, '_led_meter_checkbox'):
+                return
+            
+            # Only animate if checkbox is checked AND audio is playing
+            meters_visible = self._led_meter_checkbox.isChecked()
+            
+            if is_playing and meters_visible:
+                # Start simulation for all meters
+                for meter in self._led_meters:
+                    meter.enable_simulation(True)
+                print(f"[App] LED meters started (playback active)")
+            else:
+                # Stop simulation
+                for meter in self._led_meters:
+                    meter.enable_simulation(False)
+                if not is_playing:
+                    print(f"[App] LED meters stopped (no playback)")
+        except Exception as e:
+            print(f"[App] Error updating LED meter playback state: {e}")
+    
+    def _toggle_led_meters(self, state):
+        """Toggle visibility of LED meters behind EQ sliders."""
+        try:
+            visible = (state == Qt.Checked)
+            if hasattr(self, '_led_meters'):
+                # Check if audio is currently playing
+                is_playing = False
+                if hasattr(self, 'player') and self.player:
+                    from PySide6.QtMultimedia import QMediaPlayer
+                    is_playing = (self.player._player.playbackState() == QMediaPlayer.PlayingState)
+                
+                for meter in self._led_meters:
+                    # Show/hide the widget AND ensure it's visible in parent layout
+                    if visible:
+                        meter.setVisible(True)  # Explicitly set visible flag
+                        meter.show()            # Show in layout
+                        meter.raise_()          # Bring to front
+                        # Enable simulation if audio is currently playing
+                        if is_playing:
+                            meter.enable_simulation(True)
+                        meter.update()          # Force repaint
+                    else:
+                        meter.enable_simulation(False)
+                        meter.setVisible(False)
+                        meter.hide()
+                
+                # Force layout update
+                if hasattr(self, 'eq_panel'):
+                    self.eq_panel.updateGeometry()
+                    self.eq_panel.update()
+                
+                status = 'visible' if visible else 'hidden'
+                print(f"[App] LED meters: {status} (playing={is_playing})")
+        except Exception as e:
+            print(f"[App] Failed to toggle LED meters: {e}")
     
     def _on_eq_changed_with_label(self, val, idx):
         """Handle EQ slider change and update the corresponding value label."""
@@ -1746,30 +2366,17 @@ class MainWindow(QMainWindow):
         """Handle EQ slider changes and apply audio effects.
         
         NOTE: All 7 sliders are EQ (volume is now a separate horizontal slider).
-        EQ visualization only! Qt's QMediaPlayer doesn't support real-time audio EQ.
-        To add actual audio processing, you would need to integrate:
-        - PyAudio + numpy for real-time DSP filtering, or
-        - FFmpeg's audio filters (requires complex pipeline), or
-        - A third-party audio engine like OpenAL or FMOD
-        
-        For now, the EQ sliders save settings per-track and provide visual feedback.
+        Settings are NOT auto-saved - user must click Save button.
         """
         try:
             # Get EQ values from all 7 sliders
             eq_values = [slider.value() for slider in self._eq_sliders]
             
-            # Apply EQ settings to the player (currently just stores values)
+            # Apply EQ settings to the player
             self._apply_eq_to_player(eq_values)
             
-            # Auto-save EQ settings for current track
-            if self.current_row is not None:
-                try:
-                    self.save_eq_for_current_track()
-                    print(f"[App] EQ changed and saved: {eq_values}")
-                except Exception as save_error:
-                    print(f"[App] EQ changed: {eq_values} (save failed: {save_error})")
-            else:
-                print(f"[App] EQ changed: {eq_values} (no current track to save)")
+            # NO AUTO-SAVE - user must click Save button
+            print(f"[App] EQ changed: {eq_values} (not saved - click Save button)")
         except Exception as e:
             print(f"[App] Failed to handle EQ change: {e}")
     
@@ -1898,14 +2505,22 @@ class MainWindow(QMainWindow):
             print(f"[App] Failed to save analysis data: {e}")
 
     def _on_position(self, pos_ms: int):
+        """Update waveform position display."""
+        self._current_position_ms = pos_ms
         mins, secs = divmod(pos_ms // 1000, 60)
         self._current_position = f"{mins:02d}:{secs:02d}"
-        self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
+        # Update waveform with time info
+        if hasattr(self, 'waveform'):
+            self.waveform.setPosition(pos_ms)
 
     def _on_duration(self, dur_ms: int):
+        """Update waveform duration display."""
+        self._current_duration_ms = dur_ms
         mins, secs = divmod(dur_ms // 1000, 60)
         self._current_duration = f"{mins:02d}:{secs:02d}"
-        self.timeLabel.setText(f"{self._current_position} / {self._current_duration}")
+        # Update waveform with time info
+        if hasattr(self, 'waveform'):
+            self.waveform.setDuration(dur_ms)
 
     # --- EQ persistence helpers ---
     def _eq_store_path(self):
@@ -1921,8 +2536,14 @@ class MainWindow(QMainWindow):
         
         path = paths[self.current_row]
         
-        # Get current EQ slider values
-        eq_values = [int(s.value()) for s in getattr(self, '_eq_sliders', [])]
+        # Get current EQ slider values and convert from BeamSlider (0-100) to dB (-12 to +12)
+        eq_sliders = getattr(self, '_eq_sliders', [])
+        eq_values = []
+        for slider in eq_sliders:
+            slider_val = slider.value()  # 0-100
+            # Convert: 0 -> -12, 50 -> 0, 100 -> +12
+            db_val = int(round((slider_val / 100.0) * 24 - 12))
+            eq_values.append(db_val)
         
         # Get current volume
         current_volume = self._volume_slider.value() if hasattr(self, '_volume_slider') else 75
@@ -1942,6 +2563,7 @@ class MainWindow(QMainWindow):
         # Update with current manual settings
         track_data = {
             'eq_settings': eq_values,
+            'gains_db': eq_values,  # Also store as gains_db for compatibility
             'suggested_volume': current_volume,
             'analysis_data': existing_track_data.get('analysis_data', {}),  # Preserve existing analysis
             'analyzed_at': existing_track_data.get('analyzed_at', str(QDateTime.currentDateTime().toString())),
@@ -1954,7 +2576,8 @@ class MainWindow(QMainWindow):
         data[path] = track_data
         p.write_text(json.dumps(data, indent=2))
         
-        print(f"[App] Saved EQ and volume for: {Path(path).stem} (EQ: {eq_values}, Vol: {current_volume})")
+        print(f"[App] ✓ Saved EQ and volume for: {Path(path).stem} (EQ dB: {eq_values}, Vol: {current_volume}%)")
+        print(f"[App]   File: {p}")
 
     def _update_metadata_display(self, path: str):
         """Extract and display track + audio file metadata in the toolbar."""
@@ -2069,7 +2692,7 @@ class MainWindow(QMainWindow):
             print(f"[Metadata] Error: {e}")
 
     def load_eq_for_track(self, path):
-        """Load EQ and volume data for a track. Returns dict with eq_settings and volume or None."""
+        """Load EQ and volume data for a track. Returns dict with eq_settings/gains_db and volume or None."""
         p = self._eq_store_path()
         if not p.exists():
             return None
@@ -2084,25 +2707,18 @@ class MainWindow(QMainWindow):
         
         # Handle both old format (just values) and new format (dict with metadata)
         if isinstance(track_data, list):
-            # Old format - just EQ values
-            eq_settings = track_data
-            suggested_volume = None
+            # Old format - just EQ values (assume they're in dB)
+            return {
+                'gains_db': track_data,
+                'eq_settings': track_data,
+                'suggested_volume': None
+            }
         elif isinstance(track_data, dict):
             # New format - with metadata
-            eq_settings = track_data.get('eq_settings', track_data.get('gains_db', []))
-            suggested_volume = track_data.get('suggested_volume')
+            # Return the dict so caller can use the data
+            return track_data
         else:
             return None
-        
-        # Apply to sliders
-        for s, v in zip(getattr(self, '_eq_sliders', []), eq_settings):
-            s.setValue(int(v))
-        
-        # Apply volume if available
-        if suggested_volume is not None:
-            self._apply_volume_setting(suggested_volume)
-        
-        print(f"[App] Loaded settings for: {Path(path).stem} (EQ: {eq_settings[:3]}..., Vol: {suggested_volume})")
         
         # Return in analyzer format for consistency
         return {
@@ -2164,17 +2780,21 @@ class MainWindow(QMainWindow):
         return sidecar_dir / "queue_state.json"
 
     def _load_panel_states(self):
-        """Load saved collapse states for all panels."""
+        """Load saved collapse states for all panels.
+        
+        Default behavior: All panels open (expanded) on startup.
+        This prevents weird UI issues from launching with everything collapsed.
+        """
         try:
-            states = store.get_record("panel_states")
-            if states:
-                if hasattr(self, 'queue_panel'):
-                    self.queue_panel.set_collapsed(states.get('queue', False))
-                if hasattr(self, 'eq_panel'):
-                    self.eq_panel.set_collapsed(states.get('eq', False))
-                if hasattr(self, 'search_panel'):
-                    self.search_panel.set_collapsed(states.get('search', False))
-                print(f"[App] Loaded panel states: {states}")
+            # Always start with all panels expanded for best UX
+            # (Saved states can cause issues if everything is collapsed)
+            if hasattr(self, 'queue_panel'):
+                self.queue_panel.set_collapsed(False)
+            if hasattr(self, 'eq_panel'):
+                self.eq_panel.set_collapsed(False)
+            if hasattr(self, 'search_panel'):
+                self.search_panel.set_collapsed(False)
+            print(f"[App] Initialized panels: all expanded (default)")
         except Exception as e:
             print(f"[App] Failed to load panel states: {e}")
     

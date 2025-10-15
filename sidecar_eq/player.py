@@ -12,6 +12,9 @@ class Player(QObject):
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
+        
+        # Set initial volume to 50% to prevent ear damage!
+        self._audio_output.setVolume(0.5)
 
         # now this will connect cleanly
         self._player.positionChanged.connect(self.positionChanged)

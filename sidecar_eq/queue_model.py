@@ -12,7 +12,8 @@ from .metadata_extractor import extract_comprehensive_metadata
 
 # Expanded columns for professional music management
 COLUMNS = [
-    "●",           # Play status indicator (radio button)
+    "Lookup",      # Metadata lookup (globe icon)
+    "Status",      # Play status indicator (radio button)
     "Title", 
     "Artist", 
     "Album",
@@ -51,53 +52,56 @@ class QueueModel(QAbstractTableModel):
         
         # Handle different roles
         if role == Qt.DisplayRole:
-            # Column 0: Play status (handled by delegate, return empty for now)
+            # Column 0: Lookup (globe icon - handled by delegate)
             if col == 0:
-                return ""  # Delegate will draw the radio button
-            # Column 1: Title
+                return "🌐"  # Globe emoji as fallback
+            # Column 1: Status (play indicator - handled by delegate)
             elif col == 1:
-                return row_data.get("title") or Path(row_data["path"]).stem
-            # Column 2: Artist
+                return ""  # Delegate will draw the radio button
+            # Column 2: Title
             elif col == 2:
-                return row_data.get("artist") or ""
-            # Column 3: Album
+                return row_data.get("title") or Path(row_data["path"]).stem
+            # Column 3: Artist
             elif col == 3:
-                return row_data.get("album") or ""
-            # Column 4: Year
+                return row_data.get("artist") or ""
+            # Column 4: Album
             elif col == 4:
-                return row_data.get("year") or ""
-            # Column 5: Label
+                return row_data.get("album") or ""
+            # Column 5: Year
             elif col == 5:
-                return row_data.get("label") or ""
-            # Column 6: Producer
+                return row_data.get("year") or ""
+            # Column 6: Label
             elif col == 6:
-                return row_data.get("producer") or ""
-            # Column 7: Rating (1-5 stars)
+                return row_data.get("label") or ""
+            # Column 7: Producer
             elif col == 7:
+                return row_data.get("producer") or ""
+            # Column 8: Rating (1-5 stars)
+            elif col == 8:
                 rating = row_data.get("rating", 0)
                 return "★" * rating + "☆" * (5 - rating) if rating else ""
-            # Column 8: Bitrate
-            elif col == 8:
-                return row_data.get("bitrate") or ""
-            # Column 9: Format
+            # Column 9: Bitrate
             elif col == 9:
-                return row_data.get("format") or Path(row_data["path"]).suffix.upper()[1:]
-            # Column 10: Sample Rate
+                return row_data.get("bitrate") or ""
+            # Column 10: Format
             elif col == 10:
-                return row_data.get("sample_rate") or ""
-            # Column 11: Bit Depth
+                return row_data.get("format") or Path(row_data["path"]).suffix.upper()[1:]
+            # Column 11: Sample Rate
             elif col == 11:
-                return row_data.get("bit_depth") or ""
-            # Column 12: Duration
+                return row_data.get("sample_rate") or ""
+            # Column 12: Bit Depth
             elif col == 12:
+                return row_data.get("bit_depth") or ""
+            # Column 13: Duration
+            elif col == 13:
                 duration = row_data.get("duration")
                 if duration:
                     mins = int(duration // 60)
                     secs = int(duration % 60)
                     return f"{mins}:{secs:02d}"
                 return ""
-            # Column 13: Play Count
-            elif col == 13:
+            # Column 14: Play Count
+            elif col == 14:
                 return str(row_data.get("play_count", 0))
         
         # UserRole returns the full path (for internal use)
@@ -106,19 +110,19 @@ class QueueModel(QAbstractTableModel):
         
         # EditRole for editable fields
         elif role == Qt.EditRole:
-            if col == 1:  # Title
+            if col == 2:  # Title
                 return row_data.get("title") or Path(row_data["path"]).stem
-            elif col == 2:  # Artist
+            elif col == 3:  # Artist
                 return row_data.get("artist") or ""
-            elif col == 3:  # Album
+            elif col == 4:  # Album
                 return row_data.get("album") or ""
-            elif col == 4:  # Year
+            elif col == 5:  # Year
                 return row_data.get("year") or ""
-            elif col == 5:  # Label
+            elif col == 6:  # Label
                 return row_data.get("label") or ""
-            elif col == 6:  # Producer
+            elif col == 7:  # Producer
                 return row_data.get("producer") or ""
-            elif col == 7:  # Rating (return number 0-5)
+            elif col == 8:  # Rating (return number 0-5)
                 return row_data.get("rating", 0)
         
         return None
@@ -134,9 +138,10 @@ class QueueModel(QAbstractTableModel):
         default = super().flags(index)
         flags = default | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
         
-        # Make columns 1-7 editable (Title, Artist, Album, Year, Label, Producer, Rating)
+        # Make columns 2-8 editable (Title, Artist, Album, Year, Label, Producer, Rating)
+        # Columns 0-1 (Lookup, Status) are not editable
         col = index.column()
-        if 1 <= col <= 7:
+        if 2 <= col <= 8:
             flags |= Qt.ItemIsEditable
         
         return flags
@@ -150,25 +155,27 @@ class QueueModel(QAbstractTableModel):
         col = index.column()
         changed = False
         
-        if col == 1:  # Title
+        # Column mapping based on COLUMNS list:
+        # 0: Lookup, 1: Status, 2: Title, 3: Artist, 4: Album, 5: Year, 6: Label, 7: Producer, 8: Rating, ...
+        if col == 2:  # Title (was 1, now 2 due to Status column)
             row_data["title"] = str(value) if value else ""
             changed = True
-        elif col == 2:  # Artist
+        elif col == 3:  # Artist (was 2, now 3)
             row_data["artist"] = str(value) if value else ""
             changed = True
-        elif col == 3:  # Album
+        elif col == 4:  # Album (was 3, now 4)
             row_data["album"] = str(value) if value else ""
             changed = True
-        elif col == 4:  # Year
+        elif col == 5:  # Year (was 4, now 5)
             row_data["year"] = str(value) if value else ""
             changed = True
-        elif col == 5:  # Label
+        elif col == 6:  # Label (was 5, now 6)
             row_data["label"] = str(value) if value else ""
             changed = True
-        elif col == 6:  # Producer
+        elif col == 7:  # Producer (was 6, now 7)
             row_data["producer"] = str(value) if value else ""
             changed = True
-        elif col == 7:  # Rating (0-5)
+        elif col == 8:  # Rating (was 7, now 8 - 0-5 stars)
             try:
                 rating = max(0, min(5, int(value)))
                 row_data["rating"] = rating
@@ -283,37 +290,64 @@ class QueueModel(QAbstractTableModel):
         destinationChild is the row index where items should be inserted.
         When dropping between rows, Qt gives us the index where the drop indicator appears.
         """
-        if sourceRow < 0 or sourceRow >= len(self._rows):
+        try:
+            # Validate inputs
+            if sourceRow < 0 or sourceRow >= len(self._rows):
+                print(f"[QueueModel] Invalid sourceRow: {sourceRow} (total: {len(self._rows)})")
+                return False
+            if count <= 0 or sourceRow + count > len(self._rows):
+                print(f"[QueueModel] Invalid count: {count} (sourceRow: {sourceRow}, total: {len(self._rows)})")
+                return False
+            if destinationChild < 0 or destinationChild > len(self._rows):
+                print(f"[QueueModel] Invalid destinationChild: {destinationChild} (total: {len(self._rows)})")
+                return False
+            
+            # If source and destination are the same, no move needed
+            if sourceRow == destinationChild:
+                return False
+            # If dropping right after the source, also no move needed
+            if destinationChild == sourceRow + count:
+                return False
+            
+            # Calculate the actual destination after accounting for removal
+            # When we remove items, indices shift
+            if destinationChild > sourceRow:
+                # Moving down - destination shifts up because we remove items first
+                actual_dest = destinationChild - count
+            else:
+                # Moving up - destination stays the same
+                actual_dest = destinationChild
+            
+            # Ensure actual_dest is valid
+            if actual_dest < 0 or actual_dest > len(self._rows) - count:
+                print(f"[QueueModel] Invalid actual_dest: {actual_dest}")
+                return False
+            
+            print(f"[QueueModel] Moving rows: source={sourceRow}, count={count}, dest={destinationChild} -> actual={actual_dest}")
+            
+            # Signal that we're about to move rows
+            self.beginMoveRows(sourceParent, sourceRow, sourceRow + count - 1, 
+                              destinationParent, actual_dest)
+            
+            # Extract rows to move
+            rows_to_move = self._rows[sourceRow:sourceRow + count]
+            
+            # Remove from original position
+            del self._rows[sourceRow:sourceRow + count]
+            
+            # Insert at destination
+            for i, row in enumerate(rows_to_move):
+                self._rows.insert(actual_dest + i, row)
+            
+            self.endMoveRows()
+            print(f"[QueueModel] Successfully moved {count} row(s)")
+            return True
+            
+        except Exception as e:
+            print(f"[QueueModel] ERROR in moveRows: {e}")
+            import traceback
+            traceback.print_exc()
             return False
-        if destinationChild < 0 or destinationChild > len(self._rows):
-            return False
-        
-        # If source and destination are the same, no move needed
-        if sourceRow == destinationChild or sourceRow == destinationChild - 1:
-            return False
-        
-        # Calculate actual destination index after removal
-        actual_dest = destinationChild
-        if destinationChild > sourceRow:
-            # Moving down - the destination index shifts up by the number of removed items
-            actual_dest = destinationChild - count
-        
-        # Perform the move
-        self.beginMoveRows(sourceParent, sourceRow, sourceRow + count - 1, 
-                          destinationParent, actual_dest)
-        
-        # Extract rows to move
-        rows_to_move = self._rows[sourceRow:sourceRow + count]
-        
-        # Remove from original position
-        del self._rows[sourceRow:sourceRow + count]
-        
-        # Insert at destination
-        for i, row in enumerate(rows_to_move):
-            self._rows.insert(actual_dest + i, row)
-        
-        self.endMoveRows()
-        return True
     
     def sort(self, column, order=Qt.AscendingOrder):
         """Sort the queue by the specified column."""

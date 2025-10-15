@@ -5,9 +5,11 @@ import math
 from pathlib import Path
 
 # Third-party imports
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import QIcon, QKeyEvent, QPainter, QPen, QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableView
+from .beam_slider import BeamSlider
+from .led_meter import LEDMeter
 
 
 class QueueTableView(QTableView):
@@ -515,6 +517,8 @@ class WaveformProgress(QLabel):
         super().__init__(parent)
         self._duration = 0  # Total duration in milliseconds
         self._position = 0  # Current position in milliseconds
+        self._current_time_str = "00:00"  # Current position formatted
+        self._total_time_str = "00:00"    # Total duration formatted
         self.setMinimumHeight(60)
         self.setMinimumWidth(200)
         self.setCursor(Qt.PointingHandCursor)
@@ -529,6 +533,9 @@ class WaveformProgress(QLabel):
             duration_ms: Duration in milliseconds.
         """
         self._duration = max(0, duration_ms)
+        # Format as MM:SS
+        mins, secs = divmod(duration_ms // 1000, 60)
+        self._total_time_str = f"{mins:02d}:{secs:02d}"
         self.update()
 
     def setPosition(self, position_ms: int):
@@ -538,7 +545,14 @@ class WaveformProgress(QLabel):
             position_ms: Position in milliseconds.
         """
         self._position = max(0, position_ms)
-        self.update()
+        # Format as MM:SS
+        mins, secs = divmod(position_ms // 1000, 60)
+        new_time_str = f"{mins:02d}:{secs:02d}"
+        
+        # Only update if the displayed second changed (avoid excessive repaints)
+        if new_time_str != self._current_time_str:
+            self._current_time_str = new_time_str
+            self.update()
 
     def mousePressEvent(self, event):
         """Handle click-to-seek.
@@ -572,15 +586,17 @@ class WaveformProgress(QLabel):
         width = self.width()
         height = self.height()
 
-        # Background
-        painter.fillRect(0, 0, width, height, QColor(20, 20, 20))
+    # Background: keep transparent so the widget blends with the main window
+    # (do not paint a solid rect). This lets the main window background show
+    # through and makes the waveform appear as floating bars only.
+    # painter.fillRect(0, 0, width, height, QColor(20, 20, 20))
 
         # Calculate progress fraction
         progress = 0.0
         if self._duration > 0:
             progress = min(1.0, self._position / self._duration)
 
-        # Draw waveform bars
+        # Draw waveform bars with enhanced glow effect
         bar_count = len(self._waveform)
         bar_width = max(1, width / bar_count)
 
@@ -595,11 +611,70 @@ class WaveformProgress(QLabel):
                 # Played portion - gradient from blue to cyan
                 blue_val = int(100 + (155 * (1.0 - bar_progress)))
                 color = QColor(50, 150 + int(50 * amp), blue_val)
+                
+                # Add multi-layer glow effect with increased radius and blur
+                # Outermost glow (most diffuse, largest radius)
+                glow_outer3 = QColor(color)
+                glow_outer3.setAlpha(15)
+                painter.fillRect(int(x - 4), y - 4, max(1, int(bar_width + 7)), bar_height + 8, glow_outer3)
+                
+                # Outer glow layer 2
+                glow_outer2 = QColor(color)
+                glow_outer2.setAlpha(25)
+                painter.fillRect(int(x - 3), y - 3, max(1, int(bar_width + 5)), bar_height + 6, glow_outer2)
+                
+                # Outer glow layer 1
+                glow_outer = QColor(color)
+                glow_outer.setAlpha(40)
+                painter.fillRect(int(x - 2), y - 2, max(1, int(bar_width + 3)), bar_height + 4, glow_outer)
+                
+                # Middle glow
+                glow_mid = QColor(color)
+                glow_mid.setAlpha(70)
+                painter.fillRect(int(x - 1), y - 1, max(1, int(bar_width + 1)), bar_height + 2, glow_mid)
+                
+                # Inner glow (brightest)
+                glow_inner = QColor(color.lighter(150))
+                glow_inner.setAlpha(140)
+                painter.fillRect(int(x), y, max(1, int(bar_width - 1)), bar_height, glow_inner)
             else:
-                # Unplayed portion - dark gray
+                # Unplayed portion - dark gray (no glow)
                 gray_val = int(60 + (40 * amp))
                 color = QColor(gray_val, gray_val, gray_val)
 
+            # Draw main bar
             painter.fillRect(int(x), y, max(1, int(bar_width - 1)), bar_height, color)
+
+        # Draw time overlay in bottom-right corner
+        time_text = f"{self._current_time_str} / {self._total_time_str}"
+        font = painter.font()
+        font.setFamily("Helvetica")
+        font.setPointSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # Measure text size
+        fm = painter.fontMetrics()
+        text_width = fm.horizontalAdvance(time_text)
+        text_height = fm.height()
+        
+        # Position in bottom-right with padding
+        padding = 8
+        text_x = width - text_width - padding
+        text_y = height - padding
+        
+        # Draw semi-transparent background for readability
+        bg_rect = QRect(text_x - 4, text_y - text_height - 2, text_width + 8, text_height + 4)
+        bg_color = QColor(0, 0, 0, 160)  # Semi-transparent black
+        painter.fillRect(bg_rect, bg_color)
+        
+        # Draw text with subtle glow/shadow
+        # Shadow
+        painter.setPen(QColor(0, 0, 0, 200))
+        painter.drawText(text_x + 1, text_y + 1, time_text)
+        
+        # Main text in light gray/white
+        painter.setPen(QColor(220, 220, 220))
+        painter.drawText(text_x, text_y, time_text)
 
         painter.end()
