@@ -742,8 +742,7 @@ class MainWindow(QMainWindow):
         tb.setStyleSheet("QToolBar{background:#202020; border-bottom:1px solid #333; padding:4px;}")
         self.addToolBar(tb)
 
-        # Play/Pause button - HIDDEN (use radio buttons in queue instead)
-        # Keep reference for internal play state tracking
+        # Play/Pause button
         self.play_btn = IconButton(
             "icons/play.svg",
             "icons/play_hover.svg",
@@ -752,21 +751,10 @@ class MainWindow(QMainWindow):
         )
         self.play_btn.clicked.connect(self.on_play)
         self.play_btn.setShortcut(QKeySequence(Qt.Key_Space))
-        self.play_btn.hide()  # Hidden - click radio buttons to play
-        # tb.addWidget(self.play_btn)  # Commented out - not in toolbar
-
-        # Stop button - HIDDEN (use radio buttons in queue instead)
-        # stop_btn = IconButton(
-        #     "icons/stop.svg",
-        #     "icons/stop_hover.svg",
-        #     "icons/stop_pressed.svg",
-        #     tooltip="Stop (resets position)"
-        # )
-        # stop_btn.clicked.connect(self.on_stop)
-        # tb.addWidget(stop_btn)
+        tb.addWidget(self.play_btn)
 
         # Add Songs button (download icon)
-        # tb.addSeparator()  # No separator needed if play/stop hidden
+        tb.addSeparator()
         add_btn = IconButton(
             "icons/download.svg",
             "icons/download_hover.svg",

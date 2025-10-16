@@ -200,38 +200,30 @@ class SearchBar(QWidget):
         """)
         
         html = """
-        <div style='max-width: 700px; margin: 0 auto;'>
-            <h2 style='color: #4a9eff; margin-bottom: 20px;'>🎵 Welcome to Sidecar EQ</h2>
+        <div style='max-width: 600px; margin: 0 auto; padding: 15px;'>
+            <p style='color: #4a9eff; font-size: 14px; margin-bottom: 15px;'>Welcome to SidecarEQ</p>
             
-            <h3 style='color: #6699ff; margin-top: 30px;'>Search Your Music Library</h3>
-            <p style='color: #c0c0c0; line-height: 1.8;'>
-                Type artist names, song titles, or album names in the search box above to find tracks.
-                Results appear in four categories: Top Plays, Matching Songs, Albums, and Related Artists.
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                Type artist names, song titles, or album names in the search box above. Results appear in categories: 
+                Top Plays, Matching Songs, Albums, and Related Artists.
             </p>
             
-            <h3 style='color: #6699ff; margin-top: 30px;'>🎚️ EQ Features</h3>
-            <ul style='color: #c0c0c0; line-height: 1.8;'>
-                <li><b>7-Band EQ</b> - Adjust frequency response for each track</li>
-                <li><b>LED Meters</b> - Visualize audio levels in real-time</li>
-                <li><b>Per-Track Settings</b> - EQ and volume saved automatically</li>
-                <li><b>Save Button</b> - Manually save settings (turns green when saved!)</li>
-            </ul>
-            
-            <h3 style='color: #6699ff; margin-top: 30px;'>⌨️ Keyboard Shortcuts</h3>
-            <ul style='color: #c0c0c0; line-height: 1.8;'>
-                <li><b>Space</b> - Play/Pause current track</li>
-                <li><b>Enter</b> - Play first search result</li>
-                <li><b>Double-click</b> - Play track from search results</li>
-            </ul>
-            
-            <h3 style='color: #6699ff; margin-top: 30px;'>🎼 Queue Management</h3>
-            <p style='color: #c0c0c0; line-height: 1.8;'>
-                Click the globe icon (🌐) in the queue to fetch metadata from online sources.
-                Drag rows to reorder. Right-click column headers to show/hide columns.
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                EQ Features: 7-band EQ with LED meters. Settings save automatically per track. 
+                Use the save button to manually save (turns green when saved).
             </p>
             
-            <p style='color: #808080; margin-top: 40px; font-size: 11px; font-style: italic;'>
-                Start by searching for an artist or song above, or select a track from your queue!
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                Quick Keys: Space = Play/Pause, Enter = Play first result, Double-click = Play from results
+            </p>
+            
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                Queue Tips: Click the globe icon to fetch online metadata. Drag rows to reorder. 
+                Right-click column headers to show/hide columns.
+            </p>
+            
+            <p style='color: #808080; font-size: 10px; font-style: italic; margin-top: 15px;'>
+                Start by searching for an artist or song above, or select a track from your queue.
             </p>
         </div>
         """

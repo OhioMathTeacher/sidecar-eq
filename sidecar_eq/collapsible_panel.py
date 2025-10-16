@@ -69,7 +69,7 @@ class CollapsiblePanel(QWidget):
                 QFrame {{
                     background: transparent;
                     border: none;
-                    padding: 0px 0px;
+                    padding: 2px 0px;
                 }}
                 QFrame:hover {{
                     background: {hover_bg};
@@ -81,7 +81,7 @@ class CollapsiblePanel(QWidget):
                 QFrame {
                     background: transparent;
                     border: none;
-                    padding: 0px 0px;
+                    padding: 2px 0px;
                 }
                 QFrame:hover {
                     background: rgba(255,255,255,0.02);
@@ -89,8 +89,8 @@ class CollapsiblePanel(QWidget):
             """)
         
         title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(8, 0, 8, 0)  # Super tight - just horizontal padding, zero vertical
-        title_layout.setSpacing(8)
+        title_layout.setContentsMargins(8, 2, 8, 2)  # Minimal padding - 2px vertical
+        title_layout.setSpacing(6)
         
         # Arrow indicator (▼ expanded, ▶ collapsed)
         self.arrow_label = QLabel("▼")
