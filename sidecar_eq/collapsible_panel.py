@@ -1,21 +1,21 @@
 """Collapsible panel widget for Sidecar EQ.
 
 Provides a reusable panel with a clickable title bar that expands/collapses
-the content area. Used to organize the main UI into three sections:
-- Song Queue & Info
-- EQ & Waveform
-- Search
-
-Each panel can be independently collapsed to just show the title bar,
-giving users control over their workspace layout.
+the content area with smooth animations. Uses modern system fonts and colors.
 """
 
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QCursor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QSizePolicy
 )
+
+try:
+    from .modern_ui import SystemFonts, ModernColors
+    USE_MODERN_UI = True
+except ImportError:
+    USE_MODERN_UI = False
 
 
 class CollapsiblePanel(QWidget):
@@ -59,52 +59,91 @@ class CollapsiblePanel(QWidget):
         
         # Title bar (clickable header)
         self.title_frame = QFrame()
-        self.title_frame.setFrameShape(QFrame.StyledPanel)
-        self.title_frame.setCursor(QCursor(Qt.PointingHandCursor))
-        # Use a flatter title bar with minimal separators and consistent font
-        self.title_frame.setStyleSheet("""
-            QFrame {
-                background: transparent;
-                border: none;
-                padding: 4px 0px;
-            }
-            QFrame:hover {
-                background: rgba(255,255,255,0.02);
-            }
-        """)
+        self.title_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        self.title_frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        
+        # Modern styling with system colors
+        if USE_MODERN_UI:
+            hover_bg = ModernColors.with_opacity(ModernColors.TEXT_PRIMARY, 0.03)
+            self.title_frame.setStyleSheet(f"""
+                QFrame {{
+                    background: transparent;
+                    border: none;
+                    padding: 0px 0px;
+                }}
+                QFrame:hover {{
+                    background: {hover_bg};
+                }}
+            """)
+        else:
+            # Fallback styling
+            self.title_frame.setStyleSheet("""
+                QFrame {
+                    background: transparent;
+                    border: none;
+                    padding: 0px 0px;
+                }
+                QFrame:hover {
+                    background: rgba(255,255,255,0.02);
+                }
+            """)
         
         title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(12, 4, 12, 4)  # Reduced from 8 to 4 vertical padding
-        title_layout.setSpacing(10)
+        title_layout.setContentsMargins(8, 0, 8, 0)  # Super tight - just horizontal padding, zero vertical
+        title_layout.setSpacing(8)
         
         # Arrow indicator (▼ expanded, ▶ collapsed)
         self.arrow_label = QLabel("▼")
-        self.arrow_label.setStyleSheet("""
-            QLabel {
-                color: #888888;
-                font-size: 9px;
-                font-weight: bold;
-                background: transparent;
-                border: none;
-            }
-        """)
+        if USE_MODERN_UI:
+            self.arrow_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {ModernColors.TEXT_TERTIARY};
+                    font-size: 9px;
+                    font-weight: bold;
+                    background: transparent;
+                    border: none;
+                }}
+            """)
+        else:
+            self.arrow_label.setStyleSheet("""
+                QLabel {
+                    color: #888888;
+                    font-size: 9px;
+                    font-weight: bold;
+                    background: transparent;
+                    border: none;
+                }
+            """)
         title_layout.addWidget(self.arrow_label)
         
         # Title text
         self.title_label = QLabel(self.title)
-        title_font = QFont("Helvetica", 9)  # Reduced from 11 to 9
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
-        # Match the 'VOLUME' label style: modern sans, uppercase, subtle color
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: #d0d0d0;
-                font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
-                letter-spacing: 0.5px;
-                background: transparent;
-                border: none;
-            }
-        """)
+        if USE_MODERN_UI:
+            # Use system font for professional look
+            title_font = SystemFonts.get_system_font(size=9, weight="Semibold")
+            self.title_label.setFont(title_font)
+            self.title_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {ModernColors.TEXT_SECONDARY};
+                    letter-spacing: 0.5px;
+                    background: transparent;
+                    border: none;
+                }}
+            """)
+        else:
+            # Fallback styling
+            title_font = QFont("Helvetica", 9)
+            title_font.setBold(True)
+            self.title_label.setFont(title_font)
+            self.title_label.setStyleSheet("""
+                QLabel {
+                    color: #d0d0d0;
+                    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+                    letter-spacing: 0.5px;
+                    background: transparent;
+                    border: none;
+                }
+            """)
         title_layout.addWidget(self.title_label, stretch=1)
         
         self.title_frame.setLayout(title_layout)
@@ -116,14 +155,24 @@ class CollapsiblePanel(QWidget):
         
         # Content container (will hold user's content widget)
         self.content_container = QFrame()
-        self.content_container.setFrameShape(QFrame.StyledPanel)
-        self.content_container.setStyleSheet("""
-            QFrame {
-                background: #1e1e1e;
-                border: 1px solid #404040;
-                border-top: none;
-            }
-        """)
+        self.content_container.setFrameShape(QFrame.Shape.StyledPanel)
+        
+        if USE_MODERN_UI:
+            self.content_container.setStyleSheet(f"""
+                QFrame {{
+                    background: {ModernColors.BACKGROUND_PRIMARY};
+                    border: 1px solid {ModernColors.SEPARATOR};
+                    border-top: none;
+                }}
+            """)
+        else:
+            self.content_container.setStyleSheet("""
+                QFrame {
+                    background: #1e1e1e;
+                    border: 1px solid #404040;
+                    border-top: none;
+                }
+            """)
         
         self.content_layout = QVBoxLayout()
         self.content_layout.setContentsMargins(0, 0, 0, 0)
@@ -151,15 +200,14 @@ class CollapsiblePanel(QWidget):
         
         # Set size policy for accordion behavior
         # Content should size naturally, not stretch to fill space
-        from PySide6.QtWidgets import QSizePolicy
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         
     def toggle_collapse(self):
         """Toggle between collapsed and expanded states."""
         self.set_collapsed(not self.is_collapsed)
         
     def set_collapsed(self, collapsed: bool):
-        """Set the collapse state.
+        """Set the collapse state with smooth animation.
         
         Args:
             collapsed: True to collapse, False to expand
@@ -172,11 +220,34 @@ class CollapsiblePanel(QWidget):
         # Update arrow indicator
         self.arrow_label.setText("▶" if collapsed else "▼")
         
-        # Show/hide content
+        # Cancel any existing animation
+        if self._animation:
+            self._animation.stop()
+        
+        # Get current and target heights
         if collapsed:
-            self.content_container.hide()
+            start_height = self.content_container.height()
+            end_height = 0
         else:
+            # Ensure widget is visible to measure its size
+            self.content_container.setMaximumHeight(16777215)  # Qt max height
             self.content_container.show()
+            self.content_container.adjustSize()
+            start_height = 0 if self.content_container.height() == 0 else self.content_container.height()
+            end_height = self.content_container.sizeHint().height()
+        
+        # Create smooth height animation
+        self._animation = QPropertyAnimation(self.content_container, b"maximumHeight")
+        self._animation.setDuration(250)  # 250ms - feels natural
+        self._animation.setStartValue(start_height)
+        self._animation.setEndValue(end_height)
+        self._animation.setEasingCurve(QEasingCurve.Type.InOutCubic)  # Smooth ease
+        
+        # When collapsing finishes, actually hide the widget
+        if collapsed:
+            self._animation.finished.connect(lambda: self.content_container.hide())
+        
+        self._animation.start()
             
         # Emit signal
         self.collapsed.emit(collapsed)

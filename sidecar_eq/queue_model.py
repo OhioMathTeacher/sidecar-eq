@@ -76,10 +76,9 @@ class QueueModel(QAbstractTableModel):
             # Column 7: Producer
             elif col == 7:
                 return row_data.get("producer") or ""
-            # Column 8: Rating (1-5 stars)
+            # Column 8: Rating (1-5 stars) - Return number for delegate
             elif col == 8:
-                rating = row_data.get("rating", 0)
-                return "★" * rating + "☆" * (5 - rating) if rating else ""
+                return row_data.get("rating", 0)
             # Column 9: Bitrate
             elif col == 9:
                 return row_data.get("bitrate") or ""

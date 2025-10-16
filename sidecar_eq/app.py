@@ -58,10 +58,16 @@ from PySide6.QtWidgets import (
 from . import playlist, store
 from .collapsible_panel import CollapsiblePanel
 from .indexer import LibraryIndexer
+try:
+    from .modern_ui import SystemFonts, ModernColors, IconManager, Typography
+    USE_MODERN_UI = True
+except ImportError:
+    USE_MODERN_UI = False
 from .player import Player
 from .queue_model import QueueModel
 from .plex_helpers import get_playlist_titles, get_tracks_for_playlist
 from .search import SearchBar
+from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
 from .workers import BackgroundAnalysisWorker
 
@@ -257,6 +263,10 @@ class MainWindow(QMainWindow):
             self.play_state_delegate = PlayStateDelegate(self.table)
             self.table.setItemDelegateForColumn(1, self.play_state_delegate)  # Status column
             
+            # Install star rating delegate for Rating column (column 8)
+            self.star_rating_delegate = StarRatingDelegate(self.table)
+            self.table.setItemDelegateForColumn(8, self.star_rating_delegate)  # Rating column
+            
             # Configure columns with custom header for column management
             custom_header = CustomTableHeader(Qt.Horizontal, self.table)
             self.table.setHorizontalHeader(custom_header)
@@ -286,6 +296,18 @@ class MainWindow(QMainWindow):
             self.table.setColumnWidth(12, 70)  # Bit Depth
             self.table.setColumnWidth(13, 60)  # Duration
             self.table.setColumnWidth(14, 80)  # Play Count
+            
+            # Hide less essential columns by default (user can show via right-click menu)
+            # Keep: Lookup, Status, Title, Artist, Album, Year, Rating
+            # Hide: Label, Producer, Bitrate, Format, Sample Rate, Bit Depth, Duration, Play Count
+            self.table.setColumnHidden(6, True)   # Label
+            self.table.setColumnHidden(7, True)   # Producer
+            self.table.setColumnHidden(9, True)   # Bitrate
+            self.table.setColumnHidden(10, True)  # Format
+            self.table.setColumnHidden(11, True)  # Sample Rate
+            self.table.setColumnHidden(12, True)  # Bit Depth
+            self.table.setColumnHidden(13, True)  # Duration
+            self.table.setColumnHidden(14, True)  # Play Count
             
             # Enable word wrap in headers for better text fit
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -398,47 +420,114 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('Sidecar EQ')
         self.resize(1000, 640)
         
-        # Apply clean dark theme with subtle accents
-        self.setStyleSheet("""
-            QMainWindow {
-                background: #1e1e1e;
-            }
-            QTableView {
-                background: #252525;
-                color: #e0e0e0;
-                gridline-color: #3a3a3a;
-                border: 1px solid #3a3a3a;
-                selection-background-color: #0d4f8f;
-                selection-color: white;
-            }
-            QTableView QHeaderView::section {
-                background: #2d2d2d;
-                color: #c0c0c0;
-                font-weight: bold;
-                border: 1px solid #3a3a3a;
-                padding: 5px;
-            }
-            QToolBar {
-                background: #2a2a2a;
-                border-bottom: 1px solid #404040;
-                spacing: 6px;
-                padding: 4px;
-            }
-            QStatusBar {
-                background: #2a2a2a;
-                color: #c0c0c0;
-                border-top: 1px solid #404040;
-            }
-            QDockWidget {
-                background: #1e1e1e;
-                border-left: 1px solid #3a3a3a;
-            }
-            QLabel {
-                color: #c0c0c0;
-                background: transparent;
-                border: none;
-            }
-        """)
+        # Allow window to resize when dragged between monitors
+        # Don't set a maximum size - let Qt handle screen boundaries
+        self.setMinimumSize(800, 500)  # Reasonable minimum
+        
+        # Apply clean dark theme with modern fonts and compact styling
+        if USE_MODERN_UI:
+            # Get system font name for the table
+            system_font = SystemFonts.get_system_font(size=12).family()
+            
+            self.setStyleSheet(f"""
+                QMainWindow {{
+                    background: {ModernColors.BACKGROUND_PRIMARY};
+                }}
+                QTableView {{
+                    background: {ModernColors.BACKGROUND_SECONDARY};
+                    color: {ModernColors.TEXT_PRIMARY};
+                    gridline-color: {ModernColors.SEPARATOR};
+                    border: 1px solid {ModernColors.SEPARATOR};
+                    selection-background-color: {ModernColors.ACCENT};
+                    selection-color: white;
+                    font-family: '{system_font}';
+                    font-size: 11px;
+                    alternate-background-color: {ModernColors.BACKGROUND_PRIMARY};
+                }}
+                QTableView::item {{
+                    padding: 2px 4px;
+                    border: none;
+                }}
+                QTableView QHeaderView::section {{
+                    background: {ModernColors.BACKGROUND_TERTIARY};
+                    color: {ModernColors.TEXT_SECONDARY};
+                    font-family: '{system_font}';
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 0.3px;
+                    text-transform: uppercase;
+                    border: none;
+                    border-right: 1px solid {ModernColors.SEPARATOR};
+                    border-bottom: 1px solid {ModernColors.SEPARATOR};
+                    padding: 6px 8px;
+                }}
+                QToolBar {{
+                    background: {ModernColors.BACKGROUND_SECONDARY};
+                    border-bottom: 1px solid {ModernColors.SEPARATOR};
+                    spacing: 6px;
+                    padding: 4px;
+                }}
+                QStatusBar {{
+                    background: {ModernColors.BACKGROUND_SECONDARY};
+                    color: {ModernColors.TEXT_SECONDARY};
+                    border-top: 1px solid {ModernColors.SEPARATOR};
+                    font-family: '{system_font}';
+                    font-size: 11px;
+                }}
+                QDockWidget {{
+                    background: {ModernColors.BACKGROUND_PRIMARY};
+                    border-left: 1px solid {ModernColors.SEPARATOR};
+                }}
+                QLabel {{
+                    color: {ModernColors.TEXT_SECONDARY};
+                    background: transparent;
+                    border: none;
+                }}
+            """)
+        else:
+            # Fallback styling
+            self.setStyleSheet("""
+                QMainWindow {
+                    background: #1e1e1e;
+                }
+                QTableView {
+                    background: #252525;
+                    color: #e0e0e0;
+                    gridline-color: #3a3a3a;
+                    border: 1px solid #3a3a3a;
+                    selection-background-color: #0d4f8f;
+                    selection-color: white;
+                    font-size: 11px;
+                }
+                QTableView QHeaderView::section {
+                    background: #2d2d2d;
+                    color: #c0c0c0;
+                    font-weight: bold;
+                    font-size: 10px;
+                    border: 1px solid #3a3a3a;
+                    padding: 5px;
+                }
+                QToolBar {
+                    background: #2a2a2a;
+                    border-bottom: 1px solid #404040;
+                    spacing: 6px;
+                    padding: 4px;
+                }
+                QStatusBar {
+                    background: #2a2a2a;
+                    color: #c0c0c0;
+                    border-top: 1px solid #404040;
+                }
+                QDockWidget {
+                    background: #1e1e1e;
+                    border-left: 1px solid #3a3a3a;
+                }
+                QLabel {
+                    color: #c0c0c0;
+                    background: transparent;
+                    border: none;
+                }
+            """)
     
     def showEvent(self, event):
         """Called when the window is shown. Auto-select first row if queue has items."""
@@ -452,25 +541,63 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(100, self._do_initial_selection)
     
     def _do_initial_selection(self):
-        """Select and display info for the first track in the queue (without playing)."""
+        """Select and display info for the first track in the queue (without playing).
+        If queue is empty, load a default track (Children of the Grave by Black Sabbath)."""
         try:
             if self.model.rowCount() > 0:
-                # Select the first row in the table
+                # Queue has tracks - select the first one and search for it
                 first_index = self.model.index(0, 2)  # Column 2 is Title
                 self.table.setCurrentIndex(first_index)
                 self.table.selectRow(0)
                 
-                # Trigger auto-search to show info in the search panel
-                paths = self.model.paths()
-                if paths and self.search_bar:
-                    path = paths[0]
-                    row_data = self.model.get_row_data(0)
-                    if row_data:
-                        title = row_data.get('title', '')
-                        artist = row_data.get('artist', '')
-                        if title and artist:
-                            self.search_bar.search_for_track(artist, title)
-                            print(f"[App] Auto-selected first track: {artist} - {title}")
+                # Get metadata for the first track
+                if len(self.model._rows) > 0:
+                    row_data = self.model._rows[0]
+                    title = row_data.get('title', '')
+                    artist = row_data.get('artist', '')
+                    album = row_data.get('album', '')
+                    
+                    # Search for artist or album if available, otherwise title
+                    if artist:
+                        search_term = artist
+                    elif album:
+                        search_term = album
+                    elif title:
+                        search_term = title
+                    else:
+                        search_term = ""
+                    
+                    if search_term and self.search_bar:
+                        self.search_bar.set_search_text(search_term)
+                        print(f"[App] Auto-search for: {search_term}")
+            else:
+                # Queue is empty - load default track (MLK "I Have a Dream" speech)
+                print("[App] Queue is empty, loading default track: MLK 'I Have a Dream' speech")
+                
+                # Use bundled MLK speech file
+                from pathlib import Path
+                default_path = Path(__file__).parent / "MLKDream_64kb.mp3"
+                
+                if default_path.exists():
+                    # Add the track to queue
+                    count = self.model.add_paths([str(default_path)])
+                    if count > 0:
+                        print(f"[App] Added default track to queue: {default_path}")
+                        # Select it
+                        first_index = self.model.index(0, 2)
+                        self.table.setCurrentIndex(first_index)
+                        self.table.selectRow(0)
+                        
+                        # Search for the track title or "MLK"
+                        if self.search_bar:
+                            self.search_bar.set_search_text("MLK")
+                            print("[App] Auto-search for: MLK")
+                else:
+                    print(f"[App] Default track not found at: {default_path}")
+                    # Still show search panel with a general search
+                    if self.search_bar:
+                        self.search_bar.set_search_text("")
+                    
         except Exception as e:
             print(f"[App] Failed to do initial selection: {e}")
 
@@ -725,7 +852,90 @@ class MainWindow(QMainWindow):
         self.metadata_label.setTextFormat(_Qt.PlainText)
         tb.addWidget(self.metadata_label)
         
-        # NOTE: Removed Save EQ button - EQ auto-saves on change now
+        # Save buttons in toolbar (mini-player area)
+        tb.addSeparator()
+        
+        btn_font_size = 10
+        btn_padding = "4px 12px"
+        
+        self._save_volume_btn = QPushButton("Save Vol")
+        self._save_volume_btn.setToolTip("Save volume setting for this track")
+        
+        self._save_eq_btn = QPushButton("Save EQ")
+        self._save_eq_btn.setToolTip("Save EQ settings for this track")
+        
+        self._save_both_btn = QPushButton("Save Both")
+        self._save_both_btn.setToolTip("Save both volume and EQ for this track")
+        
+        # Apply styling to all three buttons
+        for btn in [self._save_volume_btn, self._save_eq_btn, self._save_both_btn]:
+            if USE_MODERN_UI:
+                system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        color: {ModernColors.ACCENT};
+                        border: 1px solid {ModernColors.ACCENT};
+                        border-radius: 3px;
+                        padding: {btn_padding};
+                        font-family: '{system_font}';
+                        font-size: {btn_font_size}px;
+                        font-weight: 600;
+                        min-width: 70px;
+                    }}
+                    QPushButton:hover {{
+                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
+                        border: 1px solid {ModernColors.ACCENT_HOVER};
+                    }}
+                    QPushButton:pressed {{
+                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
+                    }}
+                    QPushButton:disabled {{
+                        color: {ModernColors.TEXT_QUATERNARY};
+                        border: 1px solid {ModernColors.SEPARATOR};
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        color: #4d88ff;
+                        border: 1px solid #4d88ff;
+                        border-radius: 3px;
+                        padding: {btn_padding};
+                        font-size: {btn_font_size}px;
+                        font-weight: 600;
+                        min-width: 70px;
+                    }}
+                    QPushButton:hover {{
+                        background: rgba(77, 136, 255, 0.1);
+                        border: 1px solid #6699ff;
+                    }}
+                    QPushButton:pressed {{
+                        background: rgba(77, 136, 255, 0.2);
+                    }}
+                    QPushButton:disabled {{
+                        color: #666666;
+                        border: 1px solid #3a3a3a;
+                    }}
+                """)
+            btn.setEnabled(False)
+        
+        # Connect button clicks
+        self._save_volume_btn.clicked.connect(self._on_save_volume_clicked)
+        self._save_eq_btn.clicked.connect(self._on_save_eq_clicked)
+        self._save_both_btn.clicked.connect(self._on_save_both_clicked)
+        
+        # Timer for save confirmation messages
+        self._save_feedback_timer = QTimer()
+        self._save_feedback_timer.setSingleShot(True)
+        self._save_feedback_timer.timeout.connect(self._reset_save_buttons_text)
+        
+        # Add buttons to toolbar
+        tb.addWidget(self._save_volume_btn)
+        tb.addWidget(self._save_eq_btn)
+        tb.addWidget(self._save_both_btn)
+        
     print("[SidecarEQ] Toolbar ready")
 
     def _build_side_panel(self):
@@ -751,16 +961,19 @@ class MainWindow(QMainWindow):
         # Create waveform widget (moved from status bar)
         from .ui import WaveformProgress
         self.waveform = WaveformProgress()
-        self.waveform.setMinimumHeight(150)  # Taller than before (was 70px)
-        self.waveform.setMaximumHeight(200)
-        waveform_layout.addWidget(self.waveform)
+        self.waveform.setMinimumHeight(80)   # Allow it to shrink more (was 150)
+        self.waveform.setMaximumHeight(200)  # Still cap maximum
+        waveform_layout.addWidget(self.waveform, stretch=1)  # Give it stretch priority
+        
+        # Add spacing between waveform and volume controls
+        waveform_layout.addSpacing(24)
 
         # Volume control below waveform (horizontal BeamSlider with red glow)
         volume_container = QWidget()
         volume_container.setStyleSheet("background: transparent; border: none;")
         volume_sub_layout = QVBoxLayout()
         volume_sub_layout.setContentsMargins(0, 0, 0, 0)
-        volume_sub_layout.setSpacing(0)  # Minimal spacing
+        volume_sub_layout.setSpacing(6)  # Proper spacing between volume elements
         
         # Volume header with label and value display (compact)
         vol_header_layout = QHBoxLayout()
@@ -794,7 +1007,9 @@ class MainWindow(QMainWindow):
         volume_sub_layout.addWidget(self._volume_slider)
         
         volume_container.setLayout(volume_sub_layout)
-        waveform_layout.addWidget(volume_container)
+        waveform_layout.addWidget(volume_container, stretch=0)  # Volume doesn't stretch
+        
+        waveform_layout.addStretch()  # Push everything to top when panel is tall
 
         waveform_panel.setLayout(waveform_layout)
         waveform_panel.setStyleSheet("""
@@ -837,75 +1052,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QHBoxLayout as HB, QCheckBox
         eq_x_offset = 12
         
-        # LED meter toggle checkbox with Save button on the right
-        led_checkbox_layout = QHBoxLayout()
-        led_checkbox_layout.setContentsMargins(eq_x_offset, 0, eq_x_offset, 8)
-        self._led_meter_checkbox = QCheckBox("Show LED Meters")
-        self._led_meter_checkbox.setChecked(True)  # On by default
-        self._led_meter_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: #808080;
-                font-size: 9px;
-                font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif;
-                background: transparent;
-                border: none;
-            }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                background: #1a1a1a;
-                border: 1px solid #3a3a3a;
-                border-radius: 2px;
-            }
-            QCheckBox::indicator:checked {
-                background: #4d88ff;
-                border: 1px solid #6699ff;
-            }
-        """)
-        self._led_meter_checkbox.stateChanged.connect(self._toggle_led_meters)
-        led_checkbox_layout.addWidget(self._led_meter_checkbox)
-        led_checkbox_layout.addStretch()
-        
-        # Save Settings button (pushbutton.svg icon) - compact, inline
-        self._save_settings_btn = QPushButton()
-        self._save_settings_btn.setToolTip("Save EQ Settings")
-        
-        # Load the pushbutton.svg icon
-        from pathlib import Path
-        icon_path = Path(__file__).parent.parent / "icons" / "pushbutton.svg"
-        if icon_path.exists():
-            from PySide6.QtGui import QIcon
-            from PySide6.QtCore import QSize
-            self._save_settings_btn.setIcon(QIcon(str(icon_path)))
-            self._save_settings_btn.setIconSize(QSize(32, 32))
-        
-        self._save_settings_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                padding: 0px;
-                min-width: 32px;
-                max-width: 32px;
-                min-height: 32px;
-                max-height: 32px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 255, 255, 10);
-                border-radius: 16px;
-            }
-            QPushButton:pressed {
-                background: rgba(0, 0, 0, 20);
-                border-radius: 16px;
-            }
-            QPushButton:disabled {
-                opacity: 0.3;
-            }
-        """)
-        self._save_settings_btn.setEnabled(False)
-        self._save_settings_btn.clicked.connect(self._on_save_settings_clicked)
-        led_checkbox_layout.addWidget(self._save_settings_btn)
-        
-        eq_main_layout.addLayout(led_checkbox_layout)
+        # Removed save buttons - now in waveform/volume panel
         
         eq_layout = HB()
         eq_layout.setContentsMargins(eq_x_offset, 14, eq_x_offset, 14)
@@ -1136,6 +1283,15 @@ class MainWindow(QMainWindow):
         self._eq_opacity_actions["EQ Plate Opacity • Medium (60%)"].setChecked(True)
         # Apply after side panel builds (safe-call)
         QTimer.singleShot(0, lambda: self._set_eq_opacity(0.60))
+        
+        m_view.addSeparator()
+        
+        # LED Meters toggle
+        self._led_meters_action = QAction("Show LED Meters", self)
+        self._led_meters_action.setCheckable(True)
+        self._led_meters_action.setChecked(True)  # On by default
+        self._led_meters_action.triggered.connect(self._toggle_led_meters_from_menu)
+        m_view.addAction(self._led_meters_action)
 
         # Search shortcut (Cmd+F / Ctrl+F)
         act_search = QAction("Search", self)
@@ -1179,20 +1335,194 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[App] Error setting master volume: {e}")
     
-    def _on_save_settings_clicked(self):
-        """Handle Save Settings button click - save EQ and volume for current track."""
+    def _on_save_volume_clicked(self):
+        """Save only volume for current track."""
         if self.current_row is None:
-            self.statusBar().showMessage("No track loaded - nothing to save", 3000)
+            self.statusBar().showMessage("No track loaded", 3000)
             return
         
         try:
-            # Save both EQ and volume
-            self.save_eq_for_current_track()
-            self.statusBar().showMessage("✓ Settings saved for this track!", 3000)
-            print(f"[App] User clicked Save - settings saved for track at row {self.current_row}")
+            # Get current volume value
+            volume = self._volume_slider.value()
+            
+            # Save to store
+            if hasattr(self, 'model') and self.model and self.current_row < self.model.rowCount():
+                path_index = self.model.index(self.current_row, 0)
+                file_path = self.model.data(path_index, Qt.ItemDataRole.UserRole)
+                if file_path:
+                    store.set_record(f"volume:{file_path}", volume)
+                    
+            # Show confirmation
+            self._save_volume_btn.setText("✓ Saved!")
+            self._set_button_success_style(self._save_volume_btn)
+            self._save_feedback_timer.start(3000)
+            self.statusBar().showMessage(f"✓ Volume saved ({volume}%)", 2000)
+            print(f"[App] Volume saved: {volume}%")
         except Exception as e:
-            self.statusBar().showMessage(f"Failed to save settings: {e}", 5000)
-            print(f"[App] Save settings failed: {e}")
+            self.statusBar().showMessage(f"Save failed: {e}", 3000)
+            print(f"[App] Save volume failed: {e}")
+    
+    def _on_save_eq_clicked(self):
+        """Save only EQ settings for current track."""
+        if self.current_row is None:
+            self.statusBar().showMessage("No track loaded", 3000)
+            return
+        
+        try:
+            # Save EQ settings
+            self.save_eq_for_current_track()
+            
+            # Show confirmation
+            self._save_eq_btn.setText("✓ Saved!")
+            self._set_button_success_style(self._save_eq_btn)
+            self._save_feedback_timer.start(3000)
+            self.statusBar().showMessage("✓ EQ settings saved", 2000)
+            print(f"[App] EQ settings saved")
+        except Exception as e:
+            self.statusBar().showMessage(f"Save failed: {e}", 3000)
+            print(f"[App] Save EQ failed: {e}")
+    
+    def _on_save_both_clicked(self):
+        """Save both volume and EQ settings for current track."""
+        if self.current_row is None:
+            self.statusBar().showMessage("No track loaded", 3000)
+            return
+        
+        try:
+            # Save volume
+            volume = self._volume_slider.value()
+            if hasattr(self, 'model') and self.model and self.current_row < self.model.rowCount():
+                path_index = self.model.index(self.current_row, 0)
+                file_path = self.model.data(path_index, Qt.ItemDataRole.UserRole)
+                if file_path:
+                    store.set_record(f"volume:{file_path}", volume)
+            
+            # Save EQ
+            self.save_eq_for_current_track()
+            
+            # Show confirmation on ALL THREE buttons to indicate both vol and EQ were saved
+            self._save_volume_btn.setText("✓ Saved!")
+            self._set_button_success_style(self._save_volume_btn)
+            
+            self._save_eq_btn.setText("✓ Saved!")
+            self._set_button_success_style(self._save_eq_btn)
+            
+            self._save_both_btn.setText("✓ Saved!")
+            self._set_button_success_style(self._save_both_btn)
+            
+            self._save_feedback_timer.start(3000)
+            self.statusBar().showMessage("✓ Volume & EQ saved", 2000)
+            print(f"[App] Both volume and EQ saved")
+        except Exception as e:
+            self.statusBar().showMessage(f"Save failed: {e}", 3000)
+            print(f"[App] Save both failed: {e}")
+    
+    def _set_button_success_style(self, button):
+        """Apply success styling to a button."""
+        btn_font_size = 10
+        btn_padding = "4px 12px"
+        
+        if USE_MODERN_UI:
+            system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
+            button.setStyleSheet(f"""
+                QPushButton {{
+                    background: {ModernColors.with_opacity(ModernColors.SUCCESS, 0.15)};
+                    color: {ModernColors.SUCCESS};
+                    border: 1px solid {ModernColors.SUCCESS};
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-family: '{system_font}';
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 70px;
+                }}
+            """)
+        else:
+            button.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(52, 199, 89, 0.15);
+                    color: #34c759;
+                    border: 1px solid #34c759;
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 70px;
+                }}
+            """)
+    
+    def _reset_save_buttons_text(self):
+        """Reset all save buttons back to normal state after confirmation."""
+        btn_font_size = 10
+        btn_padding = "4px 12px"
+        
+        buttons = [
+            (self._save_volume_btn, "Save Vol"),
+            (self._save_eq_btn, "Save EQ"),
+            (self._save_both_btn, "Save Both")
+        ]
+        
+        for btn, text in buttons:
+            btn.setText(text)
+            
+            if USE_MODERN_UI:
+                system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        color: {ModernColors.ACCENT};
+                        border: 1px solid {ModernColors.ACCENT};
+                        border-radius: 3px;
+                        padding: {btn_padding};
+                        font-family: '{system_font}';
+                        font-size: {btn_font_size}px;
+                        font-weight: 600;
+                        min-width: 70px;
+                    }}
+                    QPushButton:hover {{
+                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
+                        border: 1px solid {ModernColors.ACCENT_HOVER};
+                    }}
+                    QPushButton:pressed {{
+                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
+                    }}
+                    QPushButton:disabled {{
+                        color: {ModernColors.TEXT_QUATERNARY};
+                        border: 1px solid {ModernColors.SEPARATOR};
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent;
+                        color: #4d88ff;
+                        border: 1px solid #4d88ff;
+                        border-radius: 3px;
+                        padding: {btn_padding};
+                        font-size: {btn_font_size}px;
+                        font-weight: 600;
+                        min-width: 70px;
+                    }}
+                    QPushButton:hover {{
+                        background: rgba(77, 136, 255, 0.1);
+                        border: 1px solid #6699ff;
+                    }}
+                    QPushButton:pressed {{
+                        background: rgba(77, 136, 255, 0.2);
+                    }}
+                    QPushButton:disabled {{
+                        color: #666666;
+                        border: 1px solid #3a3a3a;
+                    }}
+                """)
+    
+    def _on_save_settings_clicked(self):
+        """Legacy handler - redirect to save both."""
+        self._on_save_both_clicked()
+    
+    def _reset_save_button_text(self):
+        """Legacy reset - redirect to new method."""
+        self._reset_save_buttons_text()
 
     # --- Toolbar handlers ---
     def on_play(self):
@@ -1982,6 +2312,12 @@ class MainWindow(QMainWindow):
         
         self.current_row = row
         
+        # Enable Save buttons since we have a loaded track
+        if hasattr(self, '_save_volume_btn'):
+            self._save_volume_btn.setEnabled(True)
+            self._save_eq_btn.setEnabled(True)
+            self._save_both_btn.setEnabled(True)
+        
         # Get the track info to handle both local files, URLs, and Plex streams
         track_info = self.model._rows[row] if row < len(self.model._rows) else {}
         path = paths[row]
@@ -2039,9 +2375,11 @@ class MainWindow(QMainWindow):
             self.play_state_delegate.set_play_state(row, PlayStateDelegate.PLAY_STATE_PLAYING)
             self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
             
-            # Enable Save button since we have a loaded track
-            if hasattr(self, '_save_settings_btn'):
-                self._save_settings_btn.setEnabled(True)
+            # Enable Save buttons since we have a loaded track
+            if hasattr(self, '_save_volume_btn'):
+                self._save_volume_btn.setEnabled(True)
+                self._save_eq_btn.setEnabled(True)
+                self._save_both_btn.setEnabled(True)
             
             # Start LED meters if they're visible and enabled
             self._update_led_meters_playback(True)
@@ -2293,11 +2631,11 @@ class MainWindow(QMainWindow):
             is_playing: True if audio is playing, False otherwise
         """
         try:
-            if not hasattr(self, '_led_meters') or not hasattr(self, '_led_meter_checkbox'):
+            if not hasattr(self, '_led_meters') or not hasattr(self, '_led_meters_action'):
                 return
             
-            # Only animate if checkbox is checked AND audio is playing
-            meters_visible = self._led_meter_checkbox.isChecked()
+            # Only animate if menu action is checked AND audio is playing
+            meters_visible = self._led_meters_action.isChecked()
             
             if is_playing and meters_visible:
                 # Start simulation for all meters
@@ -2313,10 +2651,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[App] Error updating LED meter playback state: {e}")
     
+    def _toggle_led_meters_from_menu(self):
+        """Toggle LED meters from the View menu."""
+        # Get state from the menu action
+        visible = self._led_meters_action.isChecked()
+        self._toggle_led_meters_impl(visible)
+    
     def _toggle_led_meters(self, state):
-        """Toggle visibility of LED meters behind EQ sliders."""
+        """Toggle LED meters from checkbox (legacy, if checkbox still exists)."""
+        visible = (state == Qt.Checked)
+        self._toggle_led_meters_impl(visible)
+    
+    def _toggle_led_meters_impl(self, visible: bool):
+        """Implementation of LED meters toggle."""
         try:
-            visible = (state == Qt.Checked)
             if hasattr(self, '_led_meters'):
                 # Check if audio is currently playing
                 is_playing = False
@@ -2325,16 +2673,16 @@ class MainWindow(QMainWindow):
                     is_playing = (self.player._player.playbackState() == QMediaPlayer.PlayingState)
                 
                 for meter in self._led_meters:
-                    # Show/hide the widget AND ensure it's visible in parent layout
                     if visible:
-                        meter.setVisible(True)  # Explicitly set visible flag
-                        meter.show()            # Show in layout
-                        meter.raise_()          # Bring to front
-                        # Enable simulation if audio is currently playing
+                        # Show meters and enable simulation if playing
+                        meter.setVisible(True)
+                        meter.show()
+                        meter.raise_()
                         if is_playing:
                             meter.enable_simulation(True)
-                        meter.update()          # Force repaint
+                        meter.update()
                     else:
+                        # Hide meters and disable simulation
                         meter.enable_simulation(False)
                         meter.setVisible(False)
                         meter.hide()

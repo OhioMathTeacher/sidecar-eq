@@ -167,6 +167,10 @@ class SearchBar(QWidget):
         
         layout.addWidget(scroll_area)
         
+        # Welcome/help panel (shows when no search performed)
+        self.welcome_panel = self._create_welcome_panel()
+        layout.addWidget(self.welcome_panel)
+        
         self.setLayout(layout)
         
         # Timer for debounced search (wait 150ms after typing stops)
@@ -174,8 +178,66 @@ class SearchBar(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._perform_search)
         
-        # Track current selection
+        # Track current selection and last search query
         self._current_selection = None
+        self._last_search_query = None
+    
+    def _create_welcome_panel(self) -> QWidget:
+        """Create welcome/help panel shown before first search."""
+        from PySide6.QtWidgets import QTextBrowser
+        
+        panel = QTextBrowser()
+        panel.setOpenExternalLinks(False)
+        panel.setStyleSheet("""
+            QTextBrowser {
+                background: #1a1a1a;
+                color: #e0e0e0;
+                border: none;
+                padding: 20px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+        """)
+        
+        html = """
+        <div style='max-width: 700px; margin: 0 auto;'>
+            <h2 style='color: #4a9eff; margin-bottom: 20px;'>🎵 Welcome to Sidecar EQ</h2>
+            
+            <h3 style='color: #6699ff; margin-top: 30px;'>Search Your Music Library</h3>
+            <p style='color: #c0c0c0; line-height: 1.8;'>
+                Type artist names, song titles, or album names in the search box above to find tracks.
+                Results appear in four categories: Top Plays, Matching Songs, Albums, and Related Artists.
+            </p>
+            
+            <h3 style='color: #6699ff; margin-top: 30px;'>🎚️ EQ Features</h3>
+            <ul style='color: #c0c0c0; line-height: 1.8;'>
+                <li><b>7-Band EQ</b> - Adjust frequency response for each track</li>
+                <li><b>LED Meters</b> - Visualize audio levels in real-time</li>
+                <li><b>Per-Track Settings</b> - EQ and volume saved automatically</li>
+                <li><b>Save Button</b> - Manually save settings (turns green when saved!)</li>
+            </ul>
+            
+            <h3 style='color: #6699ff; margin-top: 30px;'>⌨️ Keyboard Shortcuts</h3>
+            <ul style='color: #c0c0c0; line-height: 1.8;'>
+                <li><b>Space</b> - Play/Pause current track</li>
+                <li><b>Enter</b> - Play first search result</li>
+                <li><b>Double-click</b> - Play track from search results</li>
+            </ul>
+            
+            <h3 style='color: #6699ff; margin-top: 30px;'>🎼 Queue Management</h3>
+            <p style='color: #c0c0c0; line-height: 1.8;'>
+                Click the globe icon (🌐) in the queue to fetch metadata from online sources.
+                Drag rows to reorder. Right-click column headers to show/hide columns.
+            </p>
+            
+            <p style='color: #808080; margin-top: 40px; font-size: 11px; font-style: italic;'>
+                Start by searching for an artist or song above, or select a track from your queue!
+            </p>
+        </div>
+        """
+        
+        panel.setHtml(html)
+        return panel
     
     def _create_category_list(self, title: str, icon: str) -> QWidget:
         """Create a categorized results list widget.
@@ -265,6 +327,16 @@ class SearchBar(QWidget):
         """
         self.index = index
         self._update_autocomplete()
+    
+    def set_search_text(self, text: str):
+        """Set the search text programmatically and trigger search.
+        
+        Args:
+            text: Search query to set
+        """
+        self.search_input.setText(text)
+        # Immediately trigger search (bypass debounce timer)
+        self._perform_search()
         
     def _on_text_changed(self, text: str):
         """Handle search input text changes with debouncing.
@@ -277,7 +349,7 @@ class SearchBar(QWidget):
         if text.strip():
             self._search_timer.start(150)  # Wait 150ms before searching
         else:
-            self.split_view.hide()
+            self.results_scroll_area.hide()
             
     def _perform_search(self):
         """Execute the search and display categorized results."""
@@ -285,7 +357,11 @@ class SearchBar(QWidget):
         
         if not query:
             self.results_scroll_area.hide()
+            self.welcome_panel.show()
             return
+        
+        # Cache this search query
+        self._last_search_query = query
             
         # Clear all category lists
         for category_widget in self.category_lists.values():
@@ -314,6 +390,7 @@ class SearchBar(QWidget):
         
         if not matching_tracks:
             self.results_scroll_area.hide()
+            self.welcome_panel.show()
             return
         
         # Sort by score
@@ -325,8 +402,11 @@ class SearchBar(QWidget):
         self._populate_albums(matching_tracks)
         self._populate_related_artists(matching_tracks)
         
-        # Show results
+        # Hide welcome panel and show results
+        self.welcome_panel.hide()
         self.results_scroll_area.show()
+        
+        print(f"[SearchBar] Found {len(matching_tracks)} matches for '{query}'")
     
     def _populate_top_plays(self, matching_tracks: List[Tuple[str, Dict, int]]):
         """Populate Top Plays category (top 10 by play count)."""
@@ -436,8 +516,9 @@ class SearchBar(QWidget):
         hint = hints.get(cmd, 'Press Enter to execute command')
         item = QListWidgetItem(f"💡 {hint}")
         item.setData(Qt.UserRole, None)  # No file path
-        self.results_list.addItem(item)
-        self.split_view.show()
+        # Note: results_list doesn't exist in category-based search
+        # self.results_list.addItem(item)
+        # self.results_scroll_area.show()  # Show results if needed
         
     def _fuzzy_search(self, query: str, max_results: int = 20) -> List[Tuple[str, Dict, int]]:
         """Perform fuzzy search across the music index.
@@ -558,17 +639,22 @@ class SearchBar(QWidget):
         if self._is_command(query):
             self.command_entered.emit(query)
             self.search_input.clear()
-            self.results_list.hide()
+            # Note: results_list doesn't exist in category-based search
+            # self.results_list.hide()
             return
             
-        # If results are showing, play the first one
-        if self.split_view.isVisible() and self.results_list.count() > 0:
-            first_item = self.results_list.item(0)
-            path = first_item.data(Qt.UserRole)
-            if path:
-                self.result_selected.emit(path, True)  # Add and play immediately
-                # Keep search results visible so user can browse related tracks
-                # Don't clear the search input or hide the results panel
+        # If results are showing, play the first result from any visible category
+        if self.results_scroll_area.isVisible():
+            # Find first non-empty category and play its first item
+            for category_name, category_widget in self.category_lists.items():
+                list_widget = category_widget.findChild(QListWidget)
+                if list_widget and list_widget.count() > 0:
+                    first_item = list_widget.item(0)
+                    path = first_item.data(Qt.UserRole)
+                    if path:
+                        self.result_selected.emit(path, True)  # Add and play immediately
+                        # Keep search results visible so user can browse related tracks
+                        break
                 
     def _on_result_highlighted(self, current, previous):
         """Handle highlighting a search result (populate info panel).
