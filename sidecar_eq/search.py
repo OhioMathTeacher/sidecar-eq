@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QTextBrowser, QPushButton, QSizePolicy
 )
 
+from .library import Library, Artist, Album, Song
+
 
 class SearchBar(QWidget):
     """Search bar with fuzzy matching and dropdown results.
@@ -52,8 +54,8 @@ class SearchBar(QWidget):
             parent: Parent widget (optional)
         """
         super().__init__(parent)
-        self.index = {}  # Will be populated by library indexer
-        self.completer = None  # Will be set up when index is populated
+        self.library: Optional[Library] = None  # Will be set by set_library()
+        self.completer = None  # Will be set up when library is populated
         self._setup_ui()
         
     def _setup_ui(self):
@@ -310,14 +312,13 @@ class SearchBar(QWidget):
             self.search_icon.setPixmap(pixmap)
             self.search_icon.setStyleSheet("QLabel { padding: 4px; }")
     
-    def set_index(self, index: Dict[str, Dict]):
-        """Update the music library index for searching.
+    def set_library(self, library: Library):
+        """Set the music library for searching.
         
         Args:
-            index: Dictionary mapping file paths to track metadata
-                   Format: {path: {title, artist, album, play_count, has_eq}}
+            library: Library instance with hierarchical song organization
         """
-        self.index = index
+        self.library = library
         self._update_autocomplete()
     
     def set_search_text(self, text: str):
@@ -354,120 +355,80 @@ class SearchBar(QWidget):
         
         # Cache this search query
         self._last_search_query = query
+        
+        if not self.library:
+            # No library loaded yet
+            self.results_scroll_area.hide()
+            self.welcome_panel.show()
+            return
             
         # Clear all category lists
         for category_widget in self.category_lists.values():
             category_widget.list_widget.clear()
             
-        # Perform fuzzy search on all indexed tracks
-        query_lower = query.lower()
-        matching_tracks = []
+        # Use library's hierarchical search
+        results = self.library.search(query, limit=10)
         
-        for path, meta in self.index.items():
-            title = meta.get('title', '').lower()
-            artist = meta.get('artist', '').lower()
-            album = meta.get('album', '').lower()
-            
-            # Calculate match score
-            score = 0
-            if query_lower in title:
-                score += 10
-            if query_lower in artist:
-                score += 8
-            if query_lower in album:
-                score += 5
-            
-            if score > 0:
-                matching_tracks.append((path, meta, score))
+        artists = results.get('artists', [])
+        albums = results.get('albums', [])
+        songs = results.get('songs', [])
         
-        if not matching_tracks:
+        if not artists and not albums and not songs:
             self.results_scroll_area.hide()
             self.welcome_panel.show()
             return
         
-        # Sort by score
-        matching_tracks.sort(key=lambda x: x[2], reverse=True)
-        
-        # Populate categories
-        self._populate_top_plays(matching_tracks)
-        self._populate_matching_songs(matching_tracks)
-        self._populate_albums(matching_tracks)
-        self._populate_related_artists(matching_tracks)
+        # Populate categories with hierarchical results
+        self._populate_top_plays_from_songs(songs)
+        self._populate_matching_songs(songs)
+        self._populate_albums_from_results(albums)
+        self._populate_related_artists(artists)
         
         # Hide welcome panel and show results
         self.welcome_panel.hide()
         self.results_scroll_area.show()
         
-        print(f"[SearchBar] Found {len(matching_tracks)} matches for '{query}'")
+        print(f"[SearchBar] Found {len(artists)} artists, {len(albums)} albums, {len(songs)} songs for '{query}'")
     
-    def _populate_top_plays(self, matching_tracks: List[Tuple[str, Dict, int]]):
-        """Populate Top Plays category (top 10 by play count)."""
+    def _populate_top_plays_from_songs(self, songs: List[Song]):
+        """Populate Top Plays category from Song objects."""
         list_widget = self.category_lists["Top Plays"].list_widget
         
-        # Sort by play count
-        sorted_tracks = sorted(matching_tracks, key=lambda x: x[1].get('play_count', 0), reverse=True)
-        
-        for i, (path, meta, _) in enumerate(sorted_tracks[:10]):
-            title = meta.get('title', 'Unknown')
-            artist = meta.get('artist', 'Unknown')
-            plays = meta.get('play_count', 0)
-            
-            item = QListWidgetItem(f"{i+1}. {title[:25]}{'...' if len(title) > 25 else ''}\n   {artist[:20]} • {plays} plays")
-            item.setData(Qt.UserRole, path)
+        for i, song in enumerate(songs[:10]):
+            item = QListWidgetItem(f"{i+1}. {song.title[:25]}{'...' if len(song.title) > 25 else ''}\n   {song.artist[:20]} • {song.play_count} plays")
+            item.setData(Qt.ItemDataRole.UserRole, song.path)
             list_widget.addItem(item)
     
-    def _populate_matching_songs(self, matching_tracks: List[Tuple[str, Dict, int]]):
-        """Populate Matching Songs category (top 10 by search score)."""
+    def _populate_matching_songs(self, songs: List[Song]):
+        """Populate Matching Songs category from Song objects."""
         list_widget = self.category_lists["Matching Songs"].list_widget
         
-        for i, (path, meta, score) in enumerate(matching_tracks[:10]):
-            title = meta.get('title', 'Unknown')
-            artist = meta.get('artist', 'Unknown')
-            
-            item = QListWidgetItem(f"{i+1}. {title[:25]}{'...' if len(title) > 25 else ''}\n   {artist[:20]}")
-            item.setData(Qt.UserRole, path)
+        for i, song in enumerate(songs[:10]):
+            item = QListWidgetItem(f"{i+1}. {song.title[:25]}{'...' if len(song.title) > 25 else''}\n   {song.artist[:20]}")
+            item.setData(Qt.ItemDataRole.UserRole, song.path)
             list_widget.addItem(item)
     
-    def _populate_albums(self, matching_tracks: List[Tuple[str, Dict, int]]):
-        """Populate Albums category (unique albums from matches)."""
+    def _populate_albums_from_results(self, albums: List[Album]):
+        """Populate Albums category from Album objects."""
         list_widget = self.category_lists["Albums"].list_widget
         
-        # Group by album
-        albums = {}
-        for path, meta, score in matching_tracks:
-            album = meta.get('album', 'Unknown Album')
-            artist = meta.get('artist', 'Unknown')
-            if album not in albums:
-                albums[album] = {'artist': artist, 'count': 0, 'path': path}
-            albums[album]['count'] += 1
-        
-        # Sort by track count
-        sorted_albums = sorted(albums.items(), key=lambda x: x[1]['count'], reverse=True)
-        
-        for i, (album, info) in enumerate(sorted_albums[:10]):
-            item = QListWidgetItem(f"{i+1}. {album[:25]}{'...' if len(album) > 25 else''}\n   {info['artist'][:20]} • {info['count']} tracks")
-            item.setData(Qt.UserRole, info['path'])
+        for i, album in enumerate(albums[:10]):
+            item = QListWidgetItem(f"{i+1}. {album.title[:25]}{'...' if len(album.title) > 25 else ''}\n   {album.artist[:20]} • {album.song_count} tracks")
+            # Store path to first song in album
+            path = album.songs[0].path if album.songs else None
+            item.setData(Qt.ItemDataRole.UserRole, path)
             list_widget.addItem(item)
     
-    def _populate_related_artists(self, matching_tracks: List[Tuple[str, Dict, int]]):
-        """Populate Related Artists category (artists from matching tracks)."""
+    def _populate_related_artists(self, artists: List[Artist]):
+        """Populate Related Artists category from Artist objects."""
         list_widget = self.category_lists["Related Artists"].list_widget
         
-        # Group by artist
-        artists = {}
-        for path, meta, score in matching_tracks:
-            artist = meta.get('artist', 'Unknown')
-            if artist not in artists:
-                artists[artist] = {'count': 0, 'plays': 0, 'path': path}
-            artists[artist]['count'] += 1
-            artists[artist]['plays'] += meta.get('play_count', 0)
-        
-        # Sort by track count
-        sorted_artists = sorted(artists.items(), key=lambda x: x[1]['count'], reverse=True)
-        
-        for i, (artist, info) in enumerate(sorted_artists[:10]):
-            item = QListWidgetItem(f"{i+1}. {artist[:30]}{'...' if len(artist) > 30 else ''}\n   {info['count']} tracks • {info['plays']} plays")
-            item.setData(Qt.UserRole, info['path'])
+        for i, artist in enumerate(artists[:10]):
+            item = QListWidgetItem(f"{i+1}. {artist.name[:30]}{'...' if len(artist.name) > 30 else ''}\n   {artist.song_count} tracks • {artist.total_plays} plays")
+            # Store path to first song by this artist
+            all_songs = artist.get_all_songs()
+            path = all_songs[0].path if all_songs else None
+            item.setData(Qt.ItemDataRole.UserRole, path)
             list_widget.addItem(item)
     
     def _on_category_item_double_clicked(self, item):
@@ -837,51 +798,51 @@ class SearchBar(QWidget):
         print(f"[SearchBar] Auto-search for: {query}")
         
     def _update_autocomplete(self):
-        """Build autocomplete suggestions from the index."""
-        if not self.index:
+        """Build autocomplete suggestions from the library."""
+        if not self.library:
             return
             
         # Collect unique artists, albums, and popular song titles
         suggestions = set()
         
-        for meta in self.index.values():
+        for artist in self.library.artists.values():
             # Add artists (most important for autocomplete)
-            artist = meta.get('artist', '').strip()
-            if artist and artist != 'Unknown Artist':
-                suggestions.add(artist)
+            if artist.name and artist.name != 'Unknown Artist':
+                suggestions.add(artist.name)
                 
-            # Add albums
-            album = meta.get('album', '').strip()
-            if album:
-                suggestions.add(album)
-                
-            # Add song titles for tracks you've played or customized
-            if meta.get('play_count', 0) > 0 or meta.get('has_eq', False):
-                title = meta.get('title', '').strip()
-                if title and title != 'Unknown':
-                    suggestions.add(title)
+            for album in artist.albums.values():
+                # Add albums
+                if album.title and album.title != 'Unknown Album':
+                    suggestions.add(album.title)
+                    
+                for song in album.songs:
+                    # Add song titles for tracks you've played or customized
+                    if song.play_count > 0 or song.has_eq:
+                        if song.title and song.title != 'Unknown':
+                            suggestions.add(song.title)
         
         # Sort suggestions alphabetically
         suggestion_list = sorted(list(suggestions))
         
         # Create completer with case-insensitive matching
         self.completer = QCompleter(suggestion_list, self)
-        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self.completer.setCompletionMode(QCompleter.PopupCompletion)
-        self.completer.setFilterMode(Qt.MatchContains)  # Match anywhere in string
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)  # Match anywhere in string
         
         # Style the popup
         popup = self.completer.popup()
-        popup.setStyleSheet("""
-            QListView {
-                background: #2a2a2a;
-                color: #ffffff;
-                border: 2px solid #5a9eff;
-                selection-background-color: #4a9eff;
-                font-size: 13px;
-                padding: 4px;
-            }
-        """)
+        if popup:
+            popup.setStyleSheet("""
+                QListView {
+                    background: #2a2a2a;
+                    color: #ffffff;
+                    border: 2px solid #5a9eff;
+                    selection-background-color: #4a9eff;
+                    font-size: 13px;
+                    padding: 4px;
+                }
+            """)
         
         self.search_input.setCompleter(self.completer)
         
