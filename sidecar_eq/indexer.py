@@ -1,20 +1,18 @@
 """Music library indexer for Sidecar EQ.
 
-Scans local and network folders to build a searchable index of audio files.
+Scans local and network folders to build a hierarchical music library.
 Extracts metadata (title, artist, album) and integrates with per-track
 settings (play count, EQ status).
 
-The index is saved to ~/.sidecar_eq/library_index.json for fast startup.
+The library is saved to ~/.sidecar_eq/library.json for fast startup.
 """
 
-import json
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from mutagen import File as MutagenFile
 
-from . import store
+from .library import Library, Song
 
 
 # Supported audio file extensions
@@ -22,53 +20,22 @@ AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac", ".wma"}
 
 
 class LibraryIndexer:
-    """Scans music libraries and builds searchable index.
+    """Scans music folders and builds hierarchical library.
     
-    The index maps file paths to metadata:
-    {
-        "/path/to/song.mp3": {
-            "title": "Song Title",
-            "artist": "Artist Name",
-            "album": "Album Name",
-            "play_count": 42,
-            "has_eq": True
-        }
-    }
+    The library organizes songs into Artist -> Album -> Song structure.
+    See library.py for the data model.
     
     Attributes:
-        index_path: Path to save/load the index JSON
-        index: Current index dictionary
+        library: Hierarchical Library instance
     """
     
     def __init__(self):
         """Initialize the indexer."""
-        config_dir = Path.home() / ".sidecar_eq"
-        config_dir.mkdir(exist_ok=True)
-        self.index_path = config_dir / "library_index.json"
-        self.index = {}
+        self.library = Library()
         
-        # Load existing index if available
-        self._load_index()
-        
-    def _load_index(self):
-        """Load index from disk."""
-        if self.index_path.exists():
-            try:
-                with open(self.index_path, 'r', encoding='utf-8') as f:
-                    self.index = json.load(f)
-                print(f"[Indexer] Loaded {len(self.index)} tracks from index")
-            except Exception as e:
-                print(f"[Indexer] Failed to load index: {e}")
-                self.index = {}
-                
-    def save_index(self):
-        """Save index to disk."""
-        try:
-            with open(self.index_path, 'w', encoding='utf-8') as f:
-                json.dump(self.index, f, indent=2, ensure_ascii=False)
-            print(f"[Indexer] Saved {len(self.index)} tracks to index")
-        except Exception as e:
-            print(f"[Indexer] Failed to save index: {e}")
+    def save_library(self):
+        """Save library to disk."""
+        self.library.save()
             
     def scan_folder(self, folder_path: str, recursive: bool = True, progress_callback=None) -> int:
         """Scan a folder and add tracks to the index.
@@ -108,14 +75,14 @@ class LibraryIndexer:
             scanned += 1
             path_str = str(file_path.absolute())
             
-            # Skip if already indexed
-            if path_str in self.index:
+            # Skip if already in library
+            if self.library.get_song_by_path(path_str):
                 continue
                 
-            # Extract metadata
-            metadata = self._extract_metadata(file_path)
-            if metadata:
-                self.index[path_str] = metadata
+            # Extract metadata and create Song
+            song = self._create_song(file_path)
+            if song:
+                self.library.add_song(song)
                 added += 1
                 
             # Progress feedback every 50 files
@@ -128,18 +95,18 @@ class LibraryIndexer:
         
         # Save after scan
         if added > 0:
-            self.save_index()
+            self.save_library()
             
         return added
         
-    def _extract_metadata(self, file_path: Path) -> Optional[Dict]:
-        """Extract metadata from an audio file.
+    def _create_song(self, file_path: Path) -> Optional[Song]:
+        """Create a Song object from an audio file.
         
         Args:
             file_path: Path to audio file
             
         Returns:
-            Metadata dictionary or None if extraction failed
+            Song instance or None if extraction failed
         """
         try:
             mutagen_file = MutagenFile(str(file_path), easy=True)
@@ -155,27 +122,19 @@ class LibraryIndexer:
             if not title:
                 title = file_path.stem
                 
-            # Check if track has saved settings
+            # Create Song (it will load settings from store automatically)
             path_str = str(file_path.absolute())
-            settings = store.get_record(path_str)
+            song = Song(
+                path=path_str,
+                title=title or 'Unknown',
+                artist=artist or 'Unknown Artist',
+                album=album or 'Unknown Album'
+            )
             
-            play_count = 0
-            has_eq = False
-            
-            if settings:
-                play_count = settings.get('play_count', 0)
-                has_eq = 'eq' in settings and settings['eq'] is not None
-                
-            return {
-                'title': title or 'Unknown',
-                'artist': artist or 'Unknown Artist',
-                'album': album or '',
-                'play_count': play_count,
-                'has_eq': has_eq
-            }
+            return song
             
         except Exception as e:
-            print(f"[Indexer] Failed to extract metadata from {file_path}: {e}")
+            print(f"[Indexer] Failed to create song from {file_path}: {e}")
             return None
             
     def _get_tag(self, mutagen_file, tag_names: List[str]) -> str:
@@ -201,33 +160,32 @@ class LibraryIndexer:
         return ''
         
     def update_track(self, path: str):
-        """Update a single track's metadata in the index.
+        """Update a single track's metadata in the library.
         
         Args:
             path: Path to track
         """
         file_path = Path(path)
         if not file_path.exists():
-            # Remove from index if file no longer exists
-            if path in self.index:
-                del self.index[path]
-                self.save_index()
+            # TODO: Remove from library if file no longer exists
+            # (Need to implement removal logic in Library class)
             return
             
-        metadata = self._extract_metadata(file_path)
-        if metadata:
-            self.index[path] = metadata
-            self.save_index()
+        song = self._create_song(file_path)
+        if song:
+            # Remove old entry if exists, add new one
+            # (Library will handle duplicates)
+            self.library.add_song(song)
+            self.save_library()
             
-    def get_index(self) -> Dict[str, Dict]:
-        """Get the current index.
+    def get_library(self) -> Library:
+        """Get the current library.
         
         Returns:
-            Index dictionary mapping paths to metadata
+            Library instance
         """
-        return self.index
+        return self.library
         
-    def clear_index(self):
-        """Clear the entire index."""
-        self.index = {}
-        self.save_index()
+    def clear_library(self):
+        """Clear the entire library."""
+        self.library.clear()
