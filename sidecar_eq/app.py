@@ -240,9 +240,11 @@ class MainWindow(QMainWindow):
             self.search_bar = SearchBar()
             self.search_bar.result_selected.connect(self._on_search_result_selected)
             self.search_bar.command_entered.connect(self._on_command_entered)
-            # Connect to indexer
+            # Connect to library
             if self.indexer:
-                self.search_bar.set_index(self.indexer.get_index())
+                self.search_bar.set_library(self.indexer.get_library())
+                # Automatically perform initial search with first artist
+                self.search_bar.perform_initial_search()
         except Exception as e:
             print(f"[SidecarEQ] Search bar failed: {e}")
             self.search_bar = None
@@ -1905,7 +1907,8 @@ class MainWindow(QMainWindow):
                         recursive=True,
                         progress_callback=progress_callback
                     )
-                    total = len(self.indexer.get_index())
+                    library = self.indexer.get_library()
+                    total = library.total_songs
                     self.signals.finished.emit(added, total, "")
                 except Exception as e:
                     import traceback
@@ -1949,9 +1952,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Indexing Error", f"Failed to index folder:\n{error}")
             return
             
-        # Update search bar with new index (on main thread)
+        # Update search bar with new library (on main thread)
         if self.search_bar:
-            self.search_bar.set_index(self.indexer.get_index())
+            self.search_bar.set_library(self.indexer.get_library())
+            # Automatically perform initial search with first artist
+            self.search_bar.perform_initial_search()
             
         # Show completion message
         self.statusBar().showMessage(

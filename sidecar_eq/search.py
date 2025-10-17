@@ -321,6 +321,20 @@ class SearchBar(QWidget):
         self.library = library
         self._update_autocomplete()
     
+    def perform_initial_search(self):
+        """Perform an automatic search for the first artist or song in the library.
+        
+        This is called on startup to populate search results immediately.
+        """
+        if not self.library or not self.library.artists:
+            return
+        
+        # Get the first artist alphabetically
+        first_artist = sorted(self.library.artists.keys())[0]
+        
+        # Set the search text and trigger search
+        self.set_search_text(first_artist)
+    
     def set_search_text(self, text: str):
         """Set the search text programmatically and trigger search.
         

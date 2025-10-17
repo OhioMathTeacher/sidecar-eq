@@ -458,12 +458,59 @@ class QueueModel(QAbstractTableModel):
         return result
 
     def remove_rows(self, rows):
+        """Remove specified rows from the queue.
+        
+        If this would empty the queue, automatically loads the welcome track instead.
+        
+        Args:
+            rows: List of row indices to remove
+        """
+        # Remove rows in reverse order to maintain indices
         for r in sorted(set(rows), reverse=True):
             self.beginRemoveRows(QModelIndex(), r, r)
             ap = self._rows[r]["path"]
             self._rows.pop(r)
             self._paths_set.discard(ap)
             self.endRemoveRows()
+        
+        # If queue is now empty, load the welcome track
+        if len(self._rows) == 0:
+            self._load_welcome_track()
+    
+    def _load_welcome_track(self):
+        """Load the welcome/introduction track when queue is empty.
+        
+        Looks for introduction.mp3 in the sidecar_eq package directory.
+        If not found, creates a placeholder entry.
+        """
+        # Get the path to the sidecar_eq package directory
+        package_dir = Path(__file__).parent
+        intro_path = package_dir / "introduction.mp3"
+        
+        # If introduction.mp3 doesn't exist yet, try to find any sample audio
+        if not intro_path.exists():
+            # Look for MLKDream as a fallback (temporary until we create the real intro)
+            fallback_path = package_dir / "MLKDream_64kb.mp3"
+            if fallback_path.exists():
+                intro_path = fallback_path
+            else:
+                # Create a placeholder entry if no audio file found
+                row = {
+                    "path": "",
+                    "title": "Welcome to SideCarAI",
+                    "artist": "SideCarAI Team",
+                    "album": "System Audio",
+                    "play_count": 0,
+                    "stream_url": None,
+                    "source": "local",
+                }
+                self.beginInsertRows(QModelIndex(), 0, 0)
+                self._rows.append(row)
+                self.endInsertRows()
+                return
+        
+        # Load the intro track using add_paths
+        self.add_paths([str(intro_path)])
 
     def add_track(self, track):
         """Add a single track dict (from Plex or local), expects keys: title, artist, album, stream_url or file."""
@@ -505,6 +552,8 @@ class QueueModel(QAbstractTableModel):
         try:
             if not os.path.exists(file_path):
                 print(f"[QueueModel] No saved queue found at {file_path}")
+                # Load welcome track if no saved queue exists
+                self._load_welcome_track()
                 return False
 
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -546,6 +595,11 @@ class QueueModel(QAbstractTableModel):
             self.endResetModel()
             
             print(f"[QueueModel] Loaded {len(loaded_rows)} items from saved queue (skipped {len(queue_data['rows']) - len(loaded_rows)} missing files)")
+            
+            # If queue is empty after loading, add the welcome track
+            if len(self._rows) == 0:
+                self._load_welcome_track()
+            
             return True
             
         except Exception as e:
@@ -555,6 +609,8 @@ class QueueModel(QAbstractTableModel):
             self._rows.clear()
             self._paths_set.clear()
             self.endResetModel()
+            # Load welcome track after error
+            self._load_welcome_track()
             return False
 
     def clear_queue(self):
