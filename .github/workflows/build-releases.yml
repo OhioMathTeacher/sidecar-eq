@@ -1,0 +1,212 @@
+name: Build Releases
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-macos:
+    name: Build macOS App
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install py2app setuptools
+      
+      - name: Build macOS App
+        run: |
+          cd scripts
+          python setup_py2app.py py2app
+      
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "Sidecar EQ" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "SidecarEQ.app" 200 190 \
+            --hide-extension "SidecarEQ.app" \
+            --app-drop-link 600 185 \
+            "SidecarEQ-macOS.dmg" \
+            "dist/SidecarEQ.app" || true
+      
+      - name: Upload macOS App
+        uses: actions/upload-artifact@v4
+        with:
+          name: SidecarEQ-macOS
+          path: |
+            dist/SidecarEQ.app
+            SidecarEQ-macOS.dmg
+
+  build-windows:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+      
+      - name: Build Windows Executable
+        run: |
+          pyinstaller --name SidecarEQ ^
+            --windowed ^
+            --onefile ^
+            --add-data "sidecar_eq;sidecar_eq" ^
+            --add-data "icons;icons" ^
+            --hidden-import PySide6 ^
+            --hidden-import numpy ^
+            --hidden-import scipy ^
+            --icon icons/eq.svg ^
+            sidecar_eq/app.py
+      
+      - name: Upload Windows Executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: SidecarEQ-Windows
+          path: dist/SidecarEQ.exe
+
+  build-linux:
+    name: Build Linux AppImage
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-xinerama0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-sync1 \
+            libxcb-xfixes0 \
+            libxkbcommon-x11-0 \
+            libdbus-1-3 \
+            fuse \
+            libfuse2
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+      
+      - name: Build Linux Executable
+        run: |
+          pyinstaller --name SidecarEQ \
+            --windowed \
+            --onefile \
+            --add-data "sidecar_eq:sidecar_eq" \
+            --add-data "icons:icons" \
+            --hidden-import PySide6 \
+            --hidden-import numpy \
+            --hidden-import scipy \
+            sidecar_eq/app.py
+      
+      - name: Download AppImage tools
+        run: |
+          wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+      
+      - name: Create AppImage structure
+        run: |
+          mkdir -p SidecarEQ.AppDir/usr/bin
+          mkdir -p SidecarEQ.AppDir/usr/share/applications
+          mkdir -p SidecarEQ.AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy executable
+          cp dist/SidecarEQ SidecarEQ.AppDir/usr/bin/
+          
+          # Create desktop file
+          cat > SidecarEQ.AppDir/usr/share/applications/sidecar-eq.desktop << EOF
+          [Desktop Entry]
+          Type=Application
+          Name=Sidecar EQ
+          Comment=Music player with per-track EQ and volume memory
+          Exec=SidecarEQ
+          Icon=sidecar-eq
+          Categories=Audio;AudioVideo;Player;
+          Terminal=false
+          EOF
+          
+          # Copy icon (if we have a PNG version)
+          cp icons/eq.svg SidecarEQ.AppDir/usr/share/icons/hicolor/256x256/apps/sidecar-eq.svg || true
+          
+          # Create AppRun
+          cat > SidecarEQ.AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/SidecarEQ" "$@"
+          EOF
+          chmod +x SidecarEQ.AppDir/AppRun
+      
+      - name: Build AppImage
+        run: |
+          ./appimagetool-x86_64.AppImage SidecarEQ.AppDir SidecarEQ-x86_64.AppImage
+      
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: SidecarEQ-Linux
+          path: SidecarEQ-x86_64.AppImage
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SidecarEQ-macOS/**/*
+            SidecarEQ-Windows/**/*
+            SidecarEQ-Linux/**/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
