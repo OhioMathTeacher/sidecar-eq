@@ -28,8 +28,7 @@ jobs:
       
       - name: Build macOS App
         run: |
-          cd scripts
-          python setup_py2app.py py2app
+          python scripts/setup_py2app.py py2app
       
       - name: Create DMG
         run: |
@@ -74,15 +73,15 @@ jobs:
       
       - name: Build Windows Executable
         run: |
-          pyinstaller --name SidecarEQ ^
-            --windowed ^
-            --onefile ^
-            --add-data "sidecar_eq;sidecar_eq" ^
-            --add-data "icons;icons" ^
-            --hidden-import PySide6 ^
-            --hidden-import numpy ^
-            --hidden-import scipy ^
-            --icon icons/eq.svg ^
+          pyinstaller --name SidecarEQ `
+            --windowed `
+            --onefile `
+            --add-data "sidecar_eq;sidecar_eq" `
+            --add-data "icons;icons" `
+            --hidden-import PySide6 `
+            --hidden-import numpy `
+            --hidden-import scipy `
+            --icon icons/eq.svg `
             sidecar_eq/app.py
       
       - name: Upload Windows Executable
@@ -155,7 +154,7 @@ jobs:
           cp dist/SidecarEQ SidecarEQ.AppDir/usr/bin/
           
           # Create desktop file
-          cat > SidecarEQ.AppDir/usr/share/applications/sidecar-eq.desktop << EOF
+          cat > SidecarEQ.AppDir/sidecar-eq.desktop << EOF
           [Desktop Entry]
           Type=Application
           Name=Sidecar EQ
@@ -166,8 +165,12 @@ jobs:
           Terminal=false
           EOF
           
+          # Also copy to standard location
+          cp SidecarEQ.AppDir/sidecar-eq.desktop SidecarEQ.AppDir/usr/share/applications/
+          
           # Copy icon (if we have a PNG version)
           cp icons/eq.svg SidecarEQ.AppDir/usr/share/icons/hicolor/256x256/apps/sidecar-eq.svg || true
+          cp icons/eq.svg SidecarEQ.AppDir/sidecar-eq.svg || true
           
           # Create AppRun
           cat > SidecarEQ.AppDir/AppRun << 'EOF'
