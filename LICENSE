@@ -24,15 +24,25 @@ If you wish to use Sidecar EQ in a proprietary or closed-source application,
 or if you wish to use it in a commercial context without complying with the
 AGPL v3 requirements, a commercial license is available.
 
+IMPORTANT: Distribution or sale of Sidecar EQ (or any derivative/fork) for
+commercial purposes REQUIRES explicit written permission from the copyright
+holder. This includes but is not limited to:
+- Selling copies of the software
+- Including in paid software bundles
+- Offering as a commercial service (SaaS)
+- Monetizing through ads, subscriptions, or in-app purchases
+
 Commercial licenses allow you to:
 - Integrate Sidecar EQ into closed-source applications
 - Deploy as a service without sharing your source code
 - Distribute without AGPL v3 requirements
+- Sell or monetize applications that include Sidecar EQ
 - Receive priority support and consulting
 
 For commercial licensing inquiries, please contact:
 Michael Todd Edwards
-[Contact information to be added]
+Email: [Your email here]
+Website: [Your website here]
 
 ================================================================================
 

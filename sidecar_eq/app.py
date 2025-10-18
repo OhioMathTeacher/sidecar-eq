@@ -66,6 +66,7 @@ except ImportError:
 from .player import Player
 from .queue_model import QueueModel
 from .plex_helpers import get_playlist_titles, get_tracks_for_playlist
+from .scrolling_label import ScrollingLabel
 from .search import SearchBar
 from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
@@ -335,11 +336,11 @@ class MainWindow(QMainWindow):
             # This is controlled by setDropIndicatorShown(True) and setDragDropOverwriteMode(False)
             
             # Create container with restructured layout:
-            # - Queue table (top, collapsible panel)
-            # - Waveform/EQ (middle, collapsible panel)
+            # - Queue table (top, collapsible panel, resizable)
+            # - Waveform/EQ (middle, collapsible panel, resizable)
             # - Search bar (bottom, collapsible panel)
-            # ACCORDION STYLE: Window height changes when panels collapse/expand
-            from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QSplitter
+            # Simple vertical layout with collapsible panels
+            from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QSizePolicy
             central_widget = QWidget()
             central_layout = QVBoxLayout()
             central_layout.setContentsMargins(0, 0, 0, 0)
@@ -348,25 +349,23 @@ class MainWindow(QMainWindow):
             # Panel 1: Song Queue & Metadata (collapsible, accordion style)
             self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
             self.queue_panel.set_content(self.table)
-            
-            # Make table expand to fill available space
-            from PySide6.QtWidgets import QSizePolicy
-            self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.table.setMinimumHeight(200)  # Minimum height when expanded
-            
-            central_layout.addWidget(self.queue_panel, stretch=1)  # Add stretch for vertical resizing
+            self.table.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+            self.table.setMinimumHeight(100)
+            central_layout.addWidget(self.queue_panel, stretch=0)  # Size to content
             
             # Panel 2: EQ & Waveform (collapsible, accordion style) - will be populated in _build_side_panel
             self.eq_panel = CollapsiblePanel("EQ & Waveform")
-            self._waveform_eq_splitter = None  # Will be created in _build_side_panel
-            central_layout.addWidget(self.eq_panel)  # NO stretch - natural size
+            central_layout.addWidget(self.eq_panel, stretch=0)  # Size to content
             
             # Panel 3: Search (collapsible, accordion style)
             self.search_panel = CollapsiblePanel("Artist Information & Search")
             if self.search_bar:
-                self.search_bar.setMinimumHeight(250)  # Minimum height for split search view
+                self.search_bar.setMinimumHeight(250)
                 self.search_panel.set_content(self.search_bar)
-            central_layout.addWidget(self.search_panel)  # NO stretch - natural size
+            central_layout.addWidget(self.search_panel, stretch=0)  # Size to content
+            
+            # Add stretchable spacer at the bottom to push all panels to top
+            central_layout.addStretch(1)
             
             # Load saved collapse states
             self._load_panel_states()
@@ -424,7 +423,8 @@ class MainWindow(QMainWindow):
         
         # Allow window to resize when dragged between monitors
         # Don't set a maximum size - let Qt handle screen boundaries
-        self.setMinimumSize(800, 500)  # Reasonable minimum
+        # Minimum size allows collapsing to just miniplayer + title bars
+        self.setMinimumSize(800, 150)  # Allow shrinking to miniplayer + collapsed panels
         
         # Apply clean dark theme with modern fonts and compact styling
         if USE_MODERN_UI:
@@ -743,6 +743,7 @@ class MainWindow(QMainWindow):
         # Give the toolbar a subtle background so it's clearly visible
         tb.setStyleSheet("QToolBar{background:#202020; border-bottom:1px solid #333; padding:4px;}")
         self.addToolBar(tb)
+        self.toolbar = tb  # Store reference for resize calculations
 
         # Play/Pause button
         self.play_btn = IconButton(
@@ -816,13 +817,13 @@ class MainWindow(QMainWindow):
         self._load_recent_music_dirs()
 
         # NOW PLAYING / METADATA DISPLAY - Extended to fill available space
-        # LCD-style display inspired by retro alarm clocks and digital displays
+        # LCD-style scrolling display inspired by retro alarm clocks and digital displays
         tb.addSeparator()
-        self.metadata_label = QLabel("♪ No track loaded")
-        # Use a flatter background that matches the main window to remove
-        # the heavy shaded bounding box and make the display look cleaner.
+        self.metadata_label = ScrollingLabel("♪ No track loaded")
+        
+        # Style the scrolling label with green LCD-style colors
         self.metadata_label.setStyleSheet("""
-            QLabel {
+            ScrollingLabel {
                 color: #00ff00;
                 font-family: 'Courier New', 'Courier', 'Lucida Console', monospace;
                 font-size: 14px;
@@ -833,87 +834,150 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
         """)
-        # Make it expand to fill available space (but allow text truncation with ...)
+        
+        # Make it expand to fill available space
         from PySide6.QtWidgets import QSizePolicy as _SP
         self.metadata_label.setSizePolicy(_SP.Expanding, _SP.Preferred)
         self.metadata_label.setMinimumWidth(200)
-        # Enable text elision (show ... for long text)
-        from PySide6.QtCore import Qt as _Qt
-        self.metadata_label.setTextFormat(_Qt.PlainText)
+        
+        # Configure scroll behavior (slower scroll, longer pause)
+        self.metadata_label.setScrollSpeed(1)  # 1 pixel per frame (slow, smooth)
+        self.metadata_label.setPauseDuration(2000)  # 2 second pause at start/end
+        
         tb.addWidget(self.metadata_label)
         
-        # Save buttons in toolbar (mini-player area)
+        # Layout preset dropdown and Save button in toolbar
+        tb.addSeparator()
+        
+        # Layout preset dropdown (Overleaf-style)
+        from PySide6.QtWidgets import QComboBox
+        self._layout_preset_combo = QComboBox()
+        self._layout_preset_combo.addItems([
+            "Full View",
+            "Queue Only",
+            "EQ Only",
+            "Search Only"
+        ])
+        self._layout_preset_combo.setCurrentIndex(0)  # Default to Full View
+        self._layout_preset_combo.setToolTip("Select layout preset")
+        self._layout_preset_combo.currentIndexChanged.connect(self._on_layout_preset_changed)
+        
+        if USE_MODERN_UI:
+            system_font = SystemFonts.get_system_font(size=10, weight="Medium").family()
+            self._layout_preset_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background: {ModernColors.BACKGROUND_SECONDARY};
+                    color: {ModernColors.TEXT_PRIMARY};
+                    border: 1px solid {ModernColors.SEPARATOR};
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-family: '{system_font}';
+                    font-size: 10px;
+                    min-width: 220px;
+                }}
+                QComboBox:hover {{
+                    border: 1px solid {ModernColors.ACCENT};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-top: 5px solid {ModernColors.TEXT_TERTIARY};
+                    margin-right: 8px;
+                }}
+            """)
+        else:
+            self._layout_preset_combo.setStyleSheet("""
+                QComboBox {
+                    background: #2a2a2a;
+                    color: #e0e0e0;
+                    border: 1px solid #404040;
+                    border-radius: 3px;
+                    padding: 4px 8px;
+                    font-size: 10px;
+                    min-width: 220px;
+                }
+                QComboBox:hover {
+                    border: 1px solid #4d88ff;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+                QComboBox::down-arrow {
+                    image: none;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-top: 5px solid #888888;
+                    margin-right: 8px;
+                }
+            """)
+        
+        tb.addWidget(self._layout_preset_combo)
         tb.addSeparator()
         
         btn_font_size = 10
         btn_padding = "4px 12px"
         
-        self._save_volume_btn = QPushButton("Save Vol")
-        self._save_volume_btn.setToolTip("Save volume setting for this track")
+        self._save_both_btn = QPushButton("Save EQ and Vol")
+        self._save_both_btn.setToolTip("Save both EQ and volume for this track")
         
-        self._save_eq_btn = QPushButton("Save EQ")
-        self._save_eq_btn.setToolTip("Save EQ settings for this track")
+        # Apply styling to button
+        if USE_MODERN_UI:
+            system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
+            self._save_both_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {ModernColors.ACCENT};
+                    border: 1px solid {ModernColors.ACCENT};
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-family: '{system_font}';
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
+                    border: 1px solid {ModernColors.ACCENT_HOVER};
+                }}
+                QPushButton:pressed {{
+                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
+                }}
+                QPushButton:disabled {{
+                    color: {ModernColors.TEXT_QUATERNARY};
+                    border: 1px solid {ModernColors.SEPARATOR};
+                }}
+            """)
+        else:
+            self._save_both_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: #4d88ff;
+                    border: 1px solid #4d88ff;
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(77, 136, 255, 0.1);
+                    border: 1px solid #6699ff;
+                }}
+                QPushButton:pressed {{
+                    background: rgba(77, 136, 255, 0.2);
+                }}
+                QPushButton:disabled {{
+                    color: #666666;
+                    border: 1px solid #3a3a3a;
+                }}
+            """)
+        self._save_both_btn.setEnabled(False)
         
-        self._save_both_btn = QPushButton("Save Both")
-        self._save_both_btn.setToolTip("Save both volume and EQ for this track")
-        
-        # Apply styling to all three buttons
-        for btn in [self._save_volume_btn, self._save_eq_btn, self._save_both_btn]:
-            if USE_MODERN_UI:
-                system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: transparent;
-                        color: {ModernColors.ACCENT};
-                        border: 1px solid {ModernColors.ACCENT};
-                        border-radius: 3px;
-                        padding: {btn_padding};
-                        font-family: '{system_font}';
-                        font-size: {btn_font_size}px;
-                        font-weight: 600;
-                        min-width: 70px;
-                    }}
-                    QPushButton:hover {{
-                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
-                        border: 1px solid {ModernColors.ACCENT_HOVER};
-                    }}
-                    QPushButton:pressed {{
-                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
-                    }}
-                    QPushButton:disabled {{
-                        color: {ModernColors.TEXT_QUATERNARY};
-                        border: 1px solid {ModernColors.SEPARATOR};
-                    }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: transparent;
-                        color: #4d88ff;
-                        border: 1px solid #4d88ff;
-                        border-radius: 3px;
-                        padding: {btn_padding};
-                        font-size: {btn_font_size}px;
-                        font-weight: 600;
-                        min-width: 70px;
-                    }}
-                    QPushButton:hover {{
-                        background: rgba(77, 136, 255, 0.1);
-                        border: 1px solid #6699ff;
-                    }}
-                    QPushButton:pressed {{
-                        background: rgba(77, 136, 255, 0.2);
-                    }}
-                    QPushButton:disabled {{
-                        color: #666666;
-                        border: 1px solid #3a3a3a;
-                    }}
-                """)
-            btn.setEnabled(False)
-        
-        # Connect button clicks
-        self._save_volume_btn.clicked.connect(self._on_save_volume_clicked)
-        self._save_eq_btn.clicked.connect(self._on_save_eq_clicked)
+        # Connect button click
         self._save_both_btn.clicked.connect(self._on_save_both_clicked)
         
         # Timer for save confirmation messages
@@ -921,26 +985,26 @@ class MainWindow(QMainWindow):
         self._save_feedback_timer.setSingleShot(True)
         self._save_feedback_timer.timeout.connect(self._reset_save_buttons_text)
         
-        # Add buttons to toolbar
-        tb.addWidget(self._save_volume_btn)
-        tb.addWidget(self._save_eq_btn)
+        # Add button to toolbar
         tb.addWidget(self._save_both_btn)
         
     print("[SidecarEQ] Toolbar ready")
 
     def _build_side_panel(self):
         """
-        Build the waveform/EQ split panel.
-        This creates a horizontal split: Waveform+Volume (left 50%) | Playback+EQ (right 50%)
+        Build the waveform/EQ panel.
+        This creates a horizontal layout: Waveform+Volume (left 50%) | Playback+EQ (right 50%)
         The panel is inserted into the central layout between the queue table and search bar.
         """
         from PySide6.QtWidgets import (
-            QWidget, QVBoxLayout, QLabel, QHBoxLayout, QSplitter
+            QWidget, QVBoxLayout, QLabel, QHBoxLayout
         )
 
-        # Create horizontal splitter for waveform+volume | playback+EQ
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)  # Prevent collapsing panels
+        # Create horizontal container for waveform+volume | playback+EQ
+        container = QWidget()
+        container_layout = QHBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(4)  # Small gap between panels
         
         # === LEFT PANEL: Waveform + Volume Control ===
         waveform_panel = QWidget()
@@ -1166,15 +1230,14 @@ class MainWindow(QMainWindow):
         
         eq_panel.setLayout(eq_main_layout)
         
-        # Add panels to splitter (50/50 split)
-        splitter.addWidget(waveform_panel)
-        splitter.addWidget(eq_panel)
-        splitter.setSizes([500, 500])  # Equal widths initially
+        # Add panels to horizontal layout (50/50 split)
+        container_layout.addWidget(waveform_panel, stretch=1)
+        container_layout.addWidget(eq_panel, stretch=1)
+        container.setLayout(container_layout)
         
-        # Set splitter as content of the collapsible EQ panel
-        self._waveform_eq_splitter = splitter
+        # Set container as content of the collapsible EQ panel
         if hasattr(self, 'eq_panel'):
-            self.eq_panel.set_content(splitter)
+            self.eq_panel.set_content(container)
 
         # Apply initial audio defaults (80%) for volume and EQ on first run
         try:
@@ -1219,6 +1282,11 @@ class MainWindow(QMainWindow):
         m_file = mb.addMenu("File")
         act_add_files = QAction("Add Files…", self); act_add_files.triggered.connect(self.on_add_files)
         act_add_folder = QAction("Add Folder…", self); act_add_folder.triggered.connect(self.on_add_folder)
+        
+        # Dynamic Plex submenu - lists all configured servers with their users
+        self._plex_menu = m_file.addMenu("Browse Plex")
+        self._update_plex_menu()  # Populate with servers
+        
         act_save_pl = QAction("Save Playlist…", self); act_save_pl.triggered.connect(self.on_save_playlist)
         act_load_pl = QAction("Load Playlist…", self); act_load_pl.triggered.connect(self.on_load_playlist)
         act_refresh_meta = QAction("Refresh Metadata", self); act_refresh_meta.triggered.connect(self.on_refresh_metadata)
@@ -1231,6 +1299,12 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         m_file.addAction(act_quit)
 
+        # Settings menu
+        m_settings = mb.addMenu("Settings")
+        act_manage_plex = QAction("Manage Plex Servers…", self)
+        act_manage_plex.triggered.connect(self._open_plex_account_manager)
+        m_settings.addAction(act_manage_plex)
+
         # Playback menu
         m_play = mb.addMenu("Playback")
         act_play = QAction("Play / Pause", self); act_play.setShortcut(Qt.Key_Space); act_play.triggered.connect(self.on_play)
@@ -1239,11 +1313,50 @@ class MainWindow(QMainWindow):
         for a in [act_play, act_stop, act_next]: m_play.addAction(a)
 
         # View menu (EQ Opacity + Master Volume)
+        from PySide6.QtGui import QActionGroup
         m_view = mb.addMenu("View")
+        
+        # Layout presets submenu
+        m_layout = m_view.addMenu("Layout Presets")
+        layout_grp = QActionGroup(self); layout_grp.setExclusive(True)
+        
+        act_full_view = QAction("Full View", self)
+        act_full_view.setCheckable(True)
+        act_full_view.setChecked(True)  # Default
+        act_full_view.triggered.connect(lambda: self._apply_layout_preset("full_view"))
+        layout_grp.addAction(act_full_view)
+        m_layout.addAction(act_full_view)
+        
+        act_queue_only = QAction("Queue Only", self)
+        act_queue_only.setCheckable(True)
+        act_queue_only.triggered.connect(lambda: self._apply_layout_preset("queue_only"))
+        layout_grp.addAction(act_queue_only)
+        m_layout.addAction(act_queue_only)
+        
+        act_eq_only = QAction("EQ Only", self)
+        act_eq_only.setCheckable(True)
+        act_eq_only.triggered.connect(lambda: self._apply_layout_preset("eq_only"))
+        layout_grp.addAction(act_eq_only)
+        m_layout.addAction(act_eq_only)
+        
+        act_search_only = QAction("Search Only", self)
+        act_search_only.setCheckable(True)
+        act_search_only.triggered.connect(lambda: self._apply_layout_preset("search_only"))
+        layout_grp.addAction(act_search_only)
+        m_layout.addAction(act_search_only)
+        
+        # Store layout actions for later reference
+        self._layout_actions = {
+            "full_view": act_full_view,
+            "queue_only": act_queue_only,
+            "eq_only": act_eq_only,
+            "search_only": act_search_only,
+        }
+        
+        m_view.addSeparator()
         
         # Master Volume submenu
         m_master_vol = m_view.addMenu("Master Volume")
-        from PySide6.QtGui import QActionGroup
         vol_grp = QActionGroup(self); vol_grp.setExclusive(True)
         self._master_volume_actions = {}
         def _add_master_vol(name, val):
@@ -1292,8 +1405,37 @@ class MainWindow(QMainWindow):
         # Help menu
         m_help = mb.addMenu("Help")
         act_about = QAction("About Sidecar EQ", self)
-        act_about.triggered.connect(lambda: QMessageBox.information(self, "About", "Sidecar EQ\nSimple local player with per-track EQ."))
+        act_about.triggered.connect(self._show_about_dialog)
         m_help.addAction(act_about)
+    
+    def _show_about_dialog(self):
+        """Display the About dialog with app information."""
+        about_text = """<h2>Sidecar EQ</h2>
+<p><b>Version 1.1.1</b></p>
+
+<p>A powerful music player with per-track EQ and volume memory.<br/>
+Set your perfect sound once per track—the app remembers forever.</p>
+
+<h3>Features</h3>
+<ul>
+<li><b>Per-Track Memory:</b> Each song remembers your EQ and volume</li>
+<li><b>7-Band Real-Time EQ:</b> Professional audio processing (60Hz-15kHz)</li>
+<li><b>Multi-Source Playback:</b> Local files, Plex servers, web URLs</li>
+<li><b>Background Analysis:</b> Auto-detection of LUFS, tempo, frequency response</li>
+<li><b>Smart UI:</b> Four layout presets, LED meters, star ratings</li>
+</ul>
+
+<p>Built with ❤️ by Michael Todd Edwards<br/>
+Licensed under AGPL v3</p>
+
+<p><a href="https://github.com/OhioMathTeacher/sidecar-eq">GitHub Repository</a></p>
+"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("About Sidecar EQ")
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(about_text)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
 
     def _set_eq_opacity(self, level: float):
         """Set opacity on the EQ background plate (if present)."""
@@ -1442,69 +1584,63 @@ class MainWindow(QMainWindow):
             """)
     
     def _reset_save_buttons_text(self):
-        """Reset all save buttons back to normal state after confirmation."""
+        """Reset save button back to normal state after confirmation."""
+        self._save_both_btn.setText("Save EQ and Vol")
+        
+        # Reset to normal styling
         btn_font_size = 10
         btn_padding = "4px 12px"
         
-        buttons = [
-            (self._save_volume_btn, "Save Vol"),
-            (self._save_eq_btn, "Save EQ"),
-            (self._save_both_btn, "Save Both")
-        ]
-        
-        for btn, text in buttons:
-            btn.setText(text)
-            
-            if USE_MODERN_UI:
-                system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: transparent;
-                        color: {ModernColors.ACCENT};
-                        border: 1px solid {ModernColors.ACCENT};
-                        border-radius: 3px;
-                        padding: {btn_padding};
-                        font-family: '{system_font}';
-                        font-size: {btn_font_size}px;
-                        font-weight: 600;
-                        min-width: 70px;
-                    }}
-                    QPushButton:hover {{
-                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
-                        border: 1px solid {ModernColors.ACCENT_HOVER};
-                    }}
-                    QPushButton:pressed {{
-                        background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
-                    }}
-                    QPushButton:disabled {{
-                        color: {ModernColors.TEXT_QUATERNARY};
-                        border: 1px solid {ModernColors.SEPARATOR};
-                    }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: transparent;
-                        color: #4d88ff;
-                        border: 1px solid #4d88ff;
-                        border-radius: 3px;
-                        padding: {btn_padding};
-                        font-size: {btn_font_size}px;
-                        font-weight: 600;
-                        min-width: 70px;
-                    }}
-                    QPushButton:hover {{
-                        background: rgba(77, 136, 255, 0.1);
-                        border: 1px solid #6699ff;
-                    }}
-                    QPushButton:pressed {{
-                        background: rgba(77, 136, 255, 0.2);
-                    }}
-                    QPushButton:disabled {{
-                        color: #666666;
-                        border: 1px solid #3a3a3a;
-                    }}
-                """)
+        if USE_MODERN_UI:
+            system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
+            self._save_both_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {ModernColors.ACCENT};
+                    border: 1px solid {ModernColors.ACCENT};
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-family: '{system_font}';
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
+                    border: 1px solid {ModernColors.ACCENT_HOVER};
+                }}
+                QPushButton:pressed {{
+                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
+                }}
+                QPushButton:disabled {{
+                    color: {ModernColors.TEXT_QUATERNARY};
+                    border: 1px solid {ModernColors.SEPARATOR};
+                }}
+            """)
+        else:
+            self._save_both_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: #4d88ff;
+                    border: 1px solid #4d88ff;
+                    border-radius: 3px;
+                    padding: {btn_padding};
+                    font-size: {btn_font_size}px;
+                    font-weight: 600;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(77, 136, 255, 0.1);
+                    border: 1px solid #6699ff;
+                }}
+                QPushButton:pressed {{
+                    background: rgba(77, 136, 255, 0.2);
+                }}
+                QPushButton:disabled {{
+                    color: #666666;
+                    border: 1px solid #3a3a3a;
+                }}
+            """)
     
     def _on_save_settings_clicked(self):
         """Legacy handler - redirect to save both."""
@@ -1611,6 +1747,24 @@ class MainWindow(QMainWindow):
         if self.current_row is None and count > 0:
             self.table.selectRow(0)
         self.statusBar().showMessage(f"Added {count} files from folder")
+
+    def on_browse_plex(self):
+        """Open Plex browser to add tracks from Plex server."""
+        from .plex_browser import PlexBrowserDialog
+        
+        dialog = PlexBrowserDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            selected_tracks = dialog.get_selected_tracks()
+            if selected_tracks:
+                # Add Plex tracks to queue
+                count = 0
+                for track_url in selected_tracks:
+                    count += self.model.add_paths([track_url])
+                
+                if self.current_row is None and count > 0:
+                    self.table.selectRow(0)
+                
+                self.statusBar().showMessage(f"Added {count} tracks from Plex")
 
     def on_remove_selected(self):
         sel = self.table.selectionModel().selectedRows()
@@ -1773,6 +1927,15 @@ class MainWindow(QMainWindow):
             # Add "Choose different folder..." option
             self.music_dir_combo.addItem("📁 Choose Different Folder...")
             
+            # Add Plex servers if available
+            plex_servers = self._discover_plex_servers()
+            if plex_servers:
+                for server_info in plex_servers:
+                    self.music_dir_combo.addItem(
+                        f"🎵 Plex: {server_info['name']}", 
+                        f"plex://{server_info['name']}"
+                    )
+            
             # Add other recent directories (excluding the current one)
             for dir_path in reversed(recent_dirs[-10:]):  # Last 10 directories, newest first
                 if dir_path != current_dir and Path(dir_path).exists():
@@ -1850,6 +2013,12 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.Yes:
                     self._start_background_indexing(folder)
+        elif dir_path and dir_path.startswith("plex://"):
+            # Plex server selected - show account picker
+            server_name = dir_path.replace("plex://", "")
+            self._connect_to_plex_server(server_name)
+            # Reset to current folder after connection attempt
+            self.music_dir_combo.setCurrentIndex(0)
         else:
             # Existing directory selected
             dir_path = self.music_dir_combo.itemData(index)
@@ -1974,6 +2143,183 @@ class MainWindow(QMainWindow):
             f"You can now search for songs using the search bar at the top!\n"
             f"Try typing an artist or song name. 🔍"
         )
+
+    def _discover_plex_servers(self):
+        """Get configured Plex servers from store.
+        
+        Returns:
+            List of dicts with server info, or empty list if none configured.
+        """
+        try:
+            servers = store.get_record("plex_servers") or []
+            
+            if servers:
+                print(f"[App] Found {len(servers)} configured Plex server(s)")
+            return servers
+            
+        except Exception as e:
+            print(f"[App] Failed to load Plex servers: {e}")
+            return []
+    
+    def _connect_to_plex_server(self, server_name: str):
+        """Connect to a Plex server after user selects a Home User.
+        
+        Args:
+            server_name: Name of the Plex server to connect to
+        """
+        # Get server configuration
+        servers = store.get_record("plex_servers") or []
+        server = next((s for s in servers if s.get('name') == server_name), None)
+        
+        if not server:
+            QMessageBox.warning(
+                self,
+                "Server Not Found",
+                f"Server '{server_name}' not found.\n\n"
+                "Please configure it in Settings → Manage Plex Servers."
+            )
+            return
+            
+        users = server.get('users', [])
+        if not users:
+            QMessageBox.warning(
+                self,
+                "No Users Configured",
+                f"No Home Users configured for {server_name}.\n\n"
+                "Please configure users in Settings → Manage Plex Servers."
+            )
+            return
+            
+        # If only one user, use it directly
+        if len(users) == 1:
+            user = users[0]
+        else:
+            # Multiple users - let user choose
+            from .plex_account_manager import PlexAccountSelectorDialog
+            dialog = PlexAccountSelectorDialog(server_name, users, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            user = dialog.get_selected_user()
+            
+        if user:
+            username = user.get('username', 'Unknown')
+            self._open_plex_browser_as_user(server, username)
+    
+    def _open_plex_browser_as_user(self, server: dict, username: str):
+        """Open Plex browser dialog for a specific Home User.
+        
+        Args:
+            server: Server configuration dict with host, port, users
+            username: Name of the Home User to connect as
+        """
+        try:
+            from .plex_browser import PlexBrowserDialog
+            
+            # Note: For now, we'll use a simple approach
+            # In the future, this should authenticate as the specific Home User
+            # For guest users (no PIN), we can connect directly
+            # For users with PINs, we need to get a session token
+            
+            dialog = PlexBrowserDialog(self, server_config=server, username=username)
+            result = dialog.exec()
+            
+            if result == QDialog.DialogCode.Accepted:
+                selected_tracks = dialog.get_selected_tracks()
+                if selected_tracks:
+                    # Add Plex tracks to queue
+                    count = 0
+                    for track_url in selected_tracks:
+                        count += self.model.add_paths([track_url])
+                    
+                    if self.current_row is None and count > 0:
+                        self.table.selectRow(0)
+                    
+                    server_name = server.get('name', 'Plex')
+                    self.statusBar().showMessage(f"✅ Added {count} tracks from {server_name} ({username})", 5000)
+        except Exception as e:
+            print(f"[App] Failed to connect to Plex: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(
+                self,
+                "Plex Connection Failed",
+                f"Could not connect to {server.get('name', 'Plex')} as {username}:\n\n{str(e)}"
+            )
+    
+    def _open_plex_account_manager(self):
+        """Open the Plex Server Manager dialog to configure Plex servers and Home Users."""
+        from .plex_account_manager import PlexServerManagerDialog
+        
+        dialog = PlexServerManagerDialog(store, self)
+        dialog.exec()
+        
+        # Reload music directory dropdown to show newly added servers
+        self._load_recent_music_dirs()
+        
+        # Update Plex menu to reflect changes
+        self._update_plex_menu()
+    
+    def _update_plex_menu(self):
+        """Update the Browse Plex submenu with configured servers and users."""
+        if not hasattr(self, '_plex_menu'):
+            return
+            
+        # Clear existing menu items
+        self._plex_menu.clear()
+        
+        # Get configured servers
+        servers = self._discover_plex_servers()
+        
+        if not servers:
+            # No servers configured - show placeholder
+            act_no_servers = QAction("No Plex Servers Configured", self)
+            act_no_servers.setEnabled(False)
+            self._plex_menu.addAction(act_no_servers)
+            self._plex_menu.addSeparator()
+            act_manage = QAction("Configure Plex Servers…", self)
+            act_manage.triggered.connect(self._open_plex_account_manager)
+            self._plex_menu.addAction(act_manage)
+            return
+        
+        # Add menu items for each server
+        for server in servers:
+            server_name = server.get('name', 'Unknown Server')
+            users = server.get('users', [])
+            
+            if not users:
+                # Server has no users configured - show disabled entry
+                act_server = QAction(f"{server_name} (no users configured)", self)
+                act_server.setEnabled(False)
+                self._plex_menu.addAction(act_server)
+                continue
+            
+            if len(users) == 1:
+                # Single user - direct action (no submenu)
+                user = users[0]
+                username = user.get('username', 'Unknown')
+                act_user = QAction(f"{server_name}: {username}", self)
+                act_user.triggered.connect(
+                    lambda checked=False, s=server, u=username: self._open_plex_browser_as_user(s, u)
+                )
+                self._plex_menu.addAction(act_user)
+            else:
+                # Multiple users - create submenu
+                server_submenu = self._plex_menu.addMenu(f"{server_name}")
+                for user in users:
+                    username = user.get('username', 'Unknown')
+                    has_pin = user.get('pin') is not None
+                    label = f"{username} {'🔒' if has_pin else ''}"
+                    act_user = QAction(label, self)
+                    act_user.triggered.connect(
+                        lambda checked=False, s=server, u=username: self._open_plex_browser_as_user(s, u)
+                    )
+                    server_submenu.addAction(act_user)
+        
+        # Add separator and management option at bottom
+        self._plex_menu.addSeparator()
+        act_manage = QAction("Manage Plex Servers…", self)
+        act_manage.triggered.connect(self._open_plex_account_manager)
+        self._plex_menu.addAction(act_manage)
 
     def _set_initial_audio_settings(self):
         """Initialize volume and EQ sliders to sensible defaults.
@@ -2305,10 +2651,8 @@ class MainWindow(QMainWindow):
         
         self.current_row = row
         
-        # Enable Save buttons since we have a loaded track
-        if hasattr(self, '_save_volume_btn'):
-            self._save_volume_btn.setEnabled(True)
-            self._save_eq_btn.setEnabled(True)
+        # Enable Save button since we have a loaded track
+        if hasattr(self, '_save_both_btn'):
             self._save_both_btn.setEnabled(True)
         
         # Get the track info to handle both local files, URLs, and Plex streams
@@ -2368,10 +2712,8 @@ class MainWindow(QMainWindow):
             self.play_state_delegate.set_play_state(row, PlayStateDelegate.PLAY_STATE_PLAYING)
             self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
             
-            # Enable Save buttons since we have a loaded track
-            if hasattr(self, '_save_volume_btn'):
-                self._save_volume_btn.setEnabled(True)
-                self._save_eq_btn.setEnabled(True)
+            # Enable Save button since we have a loaded track
+            if hasattr(self, '_save_both_btn'):
                 self._save_both_btn.setEnabled(True)
             
             # Start LED meters if they're visible and enabled
@@ -3135,6 +3477,7 @@ class MainWindow(QMainWindow):
                 self.eq_panel.set_collapsed(False)
             if hasattr(self, 'search_panel'):
                 self.search_panel.set_collapsed(False)
+            
             print(f"[App] Initialized panels: all expanded (default)")
         except Exception as e:
             print(f"[App] Failed to load panel states: {e}")
@@ -3154,6 +3497,60 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[App] Failed to save panel states: {e}")
     
+    def _apply_layout_preset(self, preset: str):
+        """Apply a layout preset (workflow mode).
+        
+        Args:
+            preset: One of "full_view", "queue_only", "eq_only", "search_only"
+        """
+        try:
+            if preset == "queue_only":
+                # Queue Only
+                self.queue_panel.set_collapsed(False)
+                self.eq_panel.set_collapsed(True)
+                self.search_panel.set_collapsed(True)
+                print("[App] Applied Queue Only layout")
+                
+            elif preset == "eq_only":
+                # EQ Only
+                self.queue_panel.set_collapsed(True)
+                self.eq_panel.set_collapsed(False)
+                self.search_panel.set_collapsed(True)
+                print("[App] Applied EQ Only layout")
+                
+            elif preset == "search_only":
+                # Search Only
+                self.queue_panel.set_collapsed(True)
+                self.eq_panel.set_collapsed(True)
+                self.search_panel.set_collapsed(False)
+                print("[App] Applied Search Only layout")
+                
+            elif preset == "full_view":
+                # Full View - all panels visible
+                self.queue_panel.set_collapsed(False)
+                self.eq_panel.set_collapsed(False)
+                self.search_panel.set_collapsed(False)
+                print("[App] Applied Full View layout")
+            
+            # Save the panel states
+            self._save_panel_states()
+            
+            # Resize window to fit
+            QTimer.singleShot(300, lambda: self._resize_to_content())
+            
+        except Exception as e:
+            print(f"[App] Failed to apply layout preset: {e}")
+    
+    def _on_layout_preset_changed(self, index: int):
+        """Handle layout preset dropdown selection.
+        
+        Args:
+            index: 0=Full View, 1=Queue Only, 2=EQ Only, 3=Search Only
+        """
+        presets = ["full_view", "queue_only", "eq_only", "search_only"]
+        if 0 <= index < len(presets):
+            self._apply_layout_preset(presets[index])
+    
     def _on_panel_toggled(self):
         """Handle panel collapse/expand - accordion style window resize."""
         # Save the state
@@ -3166,11 +3563,41 @@ class MainWindow(QMainWindow):
     def _resize_to_content(self):
         """Resize the main window to fit its current content (accordion behavior)."""
         try:
-            # Get the natural size needed for all visible content
-            self.adjustSize()
-            print(f"[App] Window resized (accordion): {self.width()}x{self.height()}")
+            # Calculate the height needed for visible content
+            total_height = 0
+            
+            # Add toolbar height
+            if self.toolbar:
+                total_height += self.toolbar.height()
+            
+            # Add menubar height (macOS)
+            if self.menuBar():
+                total_height += self.menuBar().height()
+            
+            # Add each panel's height
+            if hasattr(self, 'queue_panel'):
+                total_height += self.queue_panel.sizeHint().height()
+            if hasattr(self, 'eq_panel'):
+                total_height += self.eq_panel.sizeHint().height()
+            if hasattr(self, 'search_panel'):
+                total_height += self.search_panel.sizeHint().height()
+            
+            # Add status bar height
+            if self.statusBar():
+                total_height += self.statusBar().height()
+            
+            # Add some padding for borders/margins (conservative estimate)
+            total_height += 10
+            
+            # Keep current width, update height
+            current_width = self.width()
+            self.resize(current_width, total_height)
+            
+            print(f"[App] Window resized (accordion): {current_width}x{total_height}")
         except Exception as e:
             print(f"[App] Failed to resize window: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _save_queue_state(self):
         """Save the current queue state to disk."""

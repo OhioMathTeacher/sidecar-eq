@@ -2,7 +2,7 @@
 
 **Your music. Your sound. Everywhere.**
 
-A revolutionary music player that remembers YOUR perfect sonic settings for every track. No more fiddling with EQ between songs - set it once, never touch it again.
+A powerful music player with per-track EQ and volume memory. Set your perfect sound once per track - the app remembers forever. No more adjusting EQ between songs.
 
 ## 🎯 The Problem We're Solving
 
@@ -15,47 +15,98 @@ Every other music player (Spotify, iTunes, VLC) forces ONE EQ setting for ALL so
 
 ## ✨ Key Features
 
-- **🧠 Per-Track Intelligence**: Each song remembers your perfect EQ/volume settings
-- **📊 Automatic Analysis**: Background audio analysis (LUFS, peaks, frequency distribution)
-- **🎨 Beautiful Dark Theme**: 70s-style blue VU meter aesthetics
-- **💾 Auto-Save**: Like Google Docs - no interrupting dialogs
-- **🎵 Multi-Source**: Local files, Web URLs, Plex servers
-- **🔓 Open Standard**: .sidecar format for universal compatibility (coming in v2.0)
+### Core Playback
+- **🧠 Per-Track Memory**: Each song remembers your EQ and volume settings
+- **🎛️ Real-Time EQ**: 7-band equalizer (60Hz-15kHz) with actual audio processing
+- **🎚️ Individual Volume**: Set perfect loudness for each track
+- **📊 LED Meters**: Real-time audio level visualization
+- **🎵 Multi-Format**: Supports audio (MP3, FLAC, WAV, M4A) and video files
+
+### Intelligence
+- **📈 Auto-Analysis**: Background frequency response, loudness (LUFS), tempo detection
+- **🔍 Metadata Search**: Quickly find tracks by artist, album, or title
+- **⭐ Star Ratings**: Five-star rating system for organizing favorites
+- **🎲 Smart Queue**: Drag-and-drop reordering, multi-select operations
+
+### Multi-Source Playback
+- **📁 Local Files**: Direct playback from your music library
+- **🎬 Plex Integration**: Browse and play from your Plex media server
+  - Auto-discovery on local network
+  - Home User support (guest or PIN-protected)
+  - No Plex account login required
+- **🔗 Web URLs**: Direct streaming support (YouTube with optional yt-dlp)
+
+### Modern UI
+- **� Dark Theme**: Professional audio interface aesthetics
+- **📐 Layout Presets**: Four workspace views (Full, Queue Only, EQ Only, Search Only)
+- **� Auto-Save**: Settings persist automatically - like Google Docs
+- **⌨️ Keyboard Shortcuts**: Efficient playback control
 
 ## 🚀 What Makes This Revolutionary
 
-### v1.0.0 (Current Development)
-- Real-time 7-band EQ that actually processes audio
-- Smart per-track memory (~120 bytes per song)
-- Drag & drop queue management
-- Multi-select support
+### v1.1.1 (Current)
+- ✅ Real-time 7-band EQ that actually processes audio
+- ✅ Per-track memory (~120 bytes per song)
+- ✅ Plex server integration with Home Users
+- ✅ Star rating system
+- ✅ Smart layout presets
+- ✅ Background audio analysis
 
 ### v2.0.0 (Roadmap)
 - **Acoustic fingerprinting** - Settings follow songs across different paths/formats
 - **Open .sidecar protocol** - Export settings that work in ANY player
 - **Smart export** - Render audio with EQ baked in (matching source bitrate)
-- Enhanced Plex integration with full library browser
+- **Cloud sync** - Access your settings anywhere
 
 See [VERSION_GOALS.md](VERSION_GOALS.md) for the complete vision.
 
 ## 🎨 Interface Highlights
 
-### Thermometer EQ Controls
-- **7-Band Frequency Response**: 60Hz to 15kHz professional audio bands
-- **Liquid Fill Visualization**: CSS-powered gradient fills show EQ levels intuitively
-- **Interactive Handles**: Drag endpoints to adjust frequency response
-- **Educational Labels**: Clear frequency markings for learning
+### 7-Band Equalizer
+- **Professional Audio Bands**: 60Hz, 230Hz, 910Hz, 3.6kHz, 14kHz, 15kHz controls
+- **Thermometer Visualization**: Intuitive liquid-fill sliders
+- **Real-Time Processing**: Hear changes instantly
+- **Per-Track Storage**: Every song remembers your settings
 
-### Multi-Source Support
-- **Local Files**: Audio and video files with automatic format detection
-- **YouTube URLs**: Direct streaming with optional yt-dlp integration
-- **Plex Integration**: Seamless media server connectivity
+### Layout Presets
+- **Full View**: All panels visible for complete control
+- **Queue Only**: Focus on track management
+- **EQ Only**: Detailed frequency adjustment
+- **Search Only**: Quick library browsing
 
-## Optional YouTube Support (yt-dlp)
+### Plex Integration (New in 1.1.0)
+- **Auto-Discovery**: Finds servers automatically on your network
+- **Home Users**: Support for managed Plex accounts
+- **Guest Access**: No authentication for public libraries
+- **PIN Protection**: Optional 4-digit PINs for admin users
 
-Sidecar EQ can optionally accept YouTube page URLs in the UI. This uses the external tool `yt-dlp` to resolve direct stream URLs or download audio to a temporary file.
+## 🔧 Installation
 
-Install the optional dependency:
+### Download Pre-Built App (macOS)
+1. Download `SidecarEQ.app` from releases
+2. Drag to Applications folder
+3. Right-click → Open (first time only)
+
+### Build from Source
+```bash
+# Clone repository
+git clone https://github.com/OhioMathTeacher/sidecar-eq.git
+cd sidecar-eq
+
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -e .
+
+# Run application
+python -m sidecar_eq.app
+```
+
+### Optional: YouTube Support (yt-dlp)
+
+For YouTube URL streaming, install the optional dependency:
 
 ```bash
 pip install -e .[yt]
@@ -63,39 +114,109 @@ pip install -e .[yt]
 pip install yt-dlp
 ```
 
-**Note**: Downloading or programmatic access to third-party content may be subject to that site's Terms of Service. This feature is optional; we recommend users only play content they have rights to use.
+**Note**: Downloading or accessing third-party content may be subject to their Terms of Service. Use responsibly.
+
+## 🎬 Plex Setup
+
+### Quick Start
+1. Open **Settings** → **Manage Plex Servers**
+2. Click **Scan Network** to auto-discover servers
+3. Select your server and configure Home Users
+4. Enable users you want to access (e.g., "MusicMan", "Billy_Nimbus")
+5. Optionally enter 4-digit PINs for protected users
+
+Your server will appear in the source dropdown alongside local folders. See [PLEX_HOME_USER_SETUP.md](PLEX_HOME_USER_SETUP.md) for detailed configuration.
+
+### Privacy
+All Plex settings are stored locally in `~/.sidecar-eq/config.json`. No credentials are stored in the code - completely portable and private.
+
+## 📦 Building macOS App
+
+```bash
+# Install build tools
+pip install py2app setuptools
+
+# Build application
+python setup.py py2app --no-strip
+
+# Output: dist/SidecarEQ.app
+```
+
+See [BUILD_NOTES.md](BUILD_NOTES.md) for detailed build instructions and troubleshooting.
 
 ## 🏗️ Development Status
 
-**Current Version**: v0.8-alpha (approaching v1.0.0)  
-**Status**: Core features working, implementing real EQ audio processing  
-**Next**: Complete v1.0.0 must-haves, then v2.0.0 with open protocol
+**Current Version**: v1.1.1  
+**Status**: Stable - Plex integration complete, UI polished  
+**Next**: Multi-source infrastructure, acoustic fingerprinting (v2.0.0)
 
 See [VERSION_GOALS.md](VERSION_GOALS.md) for complete roadmap.
 
-## Run (dev)
-```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .
-python -m sidecar_eq.app
-```
+## 📚 Documentation
 
-## Optional YouTube support (yt-dlp)
+- [VERSION_GOALS.md](VERSION_GOALS.md) - Product roadmap and vision
+- [PLEX_HOME_USER_SETUP.md](PLEX_HOME_USER_SETUP.md) - Plex server configuration guide
+- [BUILD_NOTES.md](BUILD_NOTES.md) - Building and distributing the app
+- [WELCOME_AUDIO_SPEC.md](WELCOME_AUDIO_SPEC.md) - Welcome audio specification
 
-Sidecar EQ can optionally accept YouTube page URLs in the UI. This uses the external tool `yt-dlp` to resolve direct stream URLs or download audio to a temporary file. This feature is opt-in and requires `yt-dlp` to be installed in the same Python environment.
+## 📜 License
 
-Install the optional dependency into the venv:
+Sidecar EQ is dual-licensed:
 
-```bash
-/Users/todd/sidecar-eq/.venv/bin/python -m pip install -e .[yt]
-# or separately:
-/Users/todd/sidecar-eq/.venv/bin/python -m pip install yt-dlp
-```
+### AGPL v3 (Free & Open Source)
+The application is licensed under **GNU Affero General Public License v3.0**.
 
-Notes:
-- Some videos may require signing-in or browser cookies (yt-dlp will print a message like "Sign in to confirm you're not a bot"). In those cases you can provide a cookies file to yt-dlp with `--cookies PATH`.
-- Downloading or programmatic access to third-party content may be subject to that site's Terms of Service. This feature is optional; we recommend users only play content they have rights to use.
+✅ Use it FREE  
+✅ Modify it freely  
+✅ Share improvements  
+❗ Must share source if you distribute or deploy as a service  
+
+### Commercial License (Proprietary Use)
+Need to use Sidecar EQ in a closed-source product or service without AGPL requirements?
+
+Commercial licenses available for:
+- Closed-source applications
+- SaaS deployments without source sharing
+- Priority support and consulting
+
+Contact: Michael Todd Edwards (contact details TBD)
+
+### .sidecar Protocol (Public Domain)
+The `.sidecar` file format specification (v2.0.0+) will be **CC0 (Public Domain)** to encourage universal adoption.
+
+✅ Implement in ANY software (commercial or open source)  
+✅ No attribution required  
+✅ No licensing fees ever  
+
+## 🤝 Contributing
+
+Contributions welcome! See [VERSION_GOALS.md](VERSION_GOALS.md) for current priorities.
+
+Key areas:
+- Acoustic fingerprinting implementation
+- Additional audio format support
+- UI/UX improvements
+- Documentation and testing
+
+By contributing, you agree that your contributions will be licensed under the same dual-license model (AGPL v3 + Commercial).
+
+## 🐛 Known Issues
+
+- scipy build warning (non-fatal): Code signing optimization error during py2app build
+- First launch may take a few seconds to initialize
+
+## 💡 Tips
+
+- **Keyboard Shortcuts**: Space = Play/Pause, Delete = Remove track
+- **Multi-Select**: Cmd+Click or Shift+Click for bulk operations
+- **Column Reorder**: Drag column headers to rearrange
+- **Hide Columns**: Right-click headers to toggle visibility
+- **Layout Quick Switch**: Use layout dropdown for instant workspace changes
+
+---
+
+**Built with ❤️ by Michael Todd Edwards**  
+*Making every song sound exactly how YOU want it*
 
 ## 📜 License
 

@@ -22,12 +22,70 @@ class Player(QObject):
         self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
         
     def setSource(self, path: str):
-        # Handle both local files and HTTP/HTTPS URLs (for Plex streams)
-        if path.startswith(('http://', 'https://')):
+        # Handle different path types
+        if path.startswith('plex://'):
+            # Plex track - generate fresh stream URL
+            print(f"[Player] Attempting to play Plex track: {path}")
+            url = self._get_plex_stream_url(path)
+            if not url:
+                print(f"[Player] ❌ Failed to get Plex stream URL for: {path}")
+                return
+            print(f"[Player] ✅ Got Plex stream URL")
+        elif path.startswith(('http://', 'https://')):
             url = QUrl(path)  # Network URL
         else:
             url = QUrl.fromLocalFile(path)  # Local file
         self._player.setSource(url)
+    
+    def _get_plex_stream_url(self, plex_path: str) -> QUrl:
+        """Generate fresh Plex stream URL from plex:// path.
+        
+        Args:
+            plex_path: Format is plex://<server_name>/<track_key>
+        
+        Returns:
+            QUrl with fresh stream URL, or None if failed
+        """
+        try:
+            # Parse plex://downstairs/library/metadata/12345
+            parts = plex_path.replace('plex://', '').split('/', 1)
+            if len(parts) != 2:
+                return None
+            
+            server_name, track_key = parts
+            
+            # Import here to avoid circular dependencies
+            import os
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+            
+            from plexapi.myplex import MyPlexAccount
+            
+            # Connect to Plex
+            token = os.getenv('PLEX_TOKEN', '')
+            if not token:
+                print("[Player] No PLEX_TOKEN found in .env")
+                return None
+            
+            account = MyPlexAccount(token=token)
+            servers = [r for r in account.resources() if r.provides == 'server']
+            if not servers:
+                return None
+            
+            plex = servers[0].connect()
+            
+            # Fetch track and get fresh stream URL
+            track = plex.fetchItem(track_key)
+            stream_url = track.getStreamURL()
+            
+            return QUrl(stream_url)
+            
+        except Exception as e:
+            print(f"[Player] Plex stream error: {e}")
+            return None
 
     def play(self, path: str):
         """Load & play a new file in one call."""

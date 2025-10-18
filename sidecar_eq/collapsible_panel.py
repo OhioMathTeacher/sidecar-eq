@@ -4,8 +4,8 @@ Provides a reusable panel with a clickable title bar that expands/collapses
 the content area with smooth animations. Uses modern system fonts and colors.
 """
 
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QCursor
+from PySide6.QtCore import Signal, QPropertyAnimation, QEasingCurve, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QSizePolicy
@@ -36,19 +36,35 @@ class CollapsiblePanel(QWidget):
     # Signal emitted when collapse state changes
     collapsed = Signal(bool)  # True = collapsed, False = expanded
     
-    def __init__(self, title: str = "Panel", parent=None):
+    def __init__(self, title: str = "Panel", parent=None, start_collapsed: bool = False):
         """Initialize the collapsible panel.
         
         Args:
             title: Title text to display in header
             parent: Parent widget (optional)
+            start_collapsed: Whether to start in collapsed state
         """
         super().__init__(parent)
         self.title = title
-        self.is_collapsed = False
+        self.is_collapsed = start_collapsed
         self._content_widget = None
         self._animation = None
         self._setup_ui()
+        
+        # Set initial size policy based on start state
+        if start_collapsed:
+            # Collapsed: Fixed height (just tab bar) - completely locked
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.setFixedHeight(21)  # Use setFixedHeight for absolute lock
+            self.arrow_label.setText("▶")
+            self.content_container.hide()  # Hide content initially
+            self.content_container.setMaximumHeight(0)
+        else:
+            # Expanded: Minimum (size to content, resizable)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            self.setMaximumHeight(16777215)
+            self.setMinimumHeight(0)
+            self.arrow_label.setText("▼")
         
     def _setup_ui(self):
         """Build the panel UI components."""
@@ -57,22 +73,24 @@ class CollapsiblePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Title bar (clickable header)
+        # Title bar (static label, not clickable - layout controlled by dropdown)
         self.title_frame = QFrame()
         self.title_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self.title_frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         
-        # Modern styling with system colors
+        # Fixed height - 175% of font size (9pt * 1.75 ≈ 21px)
+        # Use both setFixedHeight and size policy to prevent expansion
+        self.title_frame.setFixedHeight(21)
+        self.title_frame.setMinimumHeight(21)
+        self.title_frame.setMaximumHeight(21)
+        self.title_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        # Modern styling with system colors (no hover since not interactive)
         if USE_MODERN_UI:
-            hover_bg = ModernColors.with_opacity(ModernColors.TEXT_PRIMARY, 0.03)
             self.title_frame.setStyleSheet(f"""
                 QFrame {{
                     background: transparent;
                     border: none;
                     padding: 2px 0px;
-                }}
-                QFrame:hover {{
-                    background: {hover_bg};
                 }}
             """)
         else:
@@ -83,17 +101,16 @@ class CollapsiblePanel(QWidget):
                     border: none;
                     padding: 2px 0px;
                 }
-                QFrame:hover {
-                    background: rgba(255,255,255,0.02);
-                }
             """)
         
         title_layout = QHBoxLayout()
         title_layout.setContentsMargins(8, 2, 8, 2)  # Minimal padding - 2px vertical
         title_layout.setSpacing(6)
         
-        # Arrow indicator (▼ expanded, ▶ collapsed)
+        # Arrow status indicator (▼ visible, ▶ hidden) - NOT clickable, just shows state
         self.arrow_label = QLabel("▼")
+        self.arrow_label.setFixedSize(10, 17)  # Lock arrow size to prevent expansion
+        self.arrow_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if USE_MODERN_UI:
             self.arrow_label.setStyleSheet(f"""
                 QLabel {{
@@ -118,6 +135,8 @@ class CollapsiblePanel(QWidget):
         
         # Title text
         self.title_label = QLabel(self.title)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.title_label.setMaximumHeight(17)  # Lock title label height
         if USE_MODERN_UI:
             # Use system font for professional look
             title_font = SystemFonts.get_system_font(size=9, weight="Semibold")
@@ -148,14 +167,14 @@ class CollapsiblePanel(QWidget):
         
         self.title_frame.setLayout(title_layout)
         
-        # Make title bar clickable
-        self.title_frame.mousePressEvent = lambda e: self.toggle_collapse()
-        
         layout.addWidget(self.title_frame)
         
         # Content container (will hold user's content widget)
         self.content_container = QFrame()
         self.content_container.setFrameShape(QFrame.Shape.StyledPanel)
+        
+        # Size policy: expand horizontally, fit content vertically (no extra space)
+        self.content_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
         if USE_MODERN_UI:
             self.content_container.setStyleSheet(f"""
@@ -177,9 +196,10 @@ class CollapsiblePanel(QWidget):
         self.content_layout = QVBoxLayout()
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(0)
+        self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align content to top, not center
         self.content_container.setLayout(self.content_layout)
         
-        layout.addWidget(self.content_container)
+        layout.addWidget(self.content_container, stretch=0)  # No stretch - size to content
         
         self.setLayout(layout)
         
@@ -196,11 +216,14 @@ class CollapsiblePanel(QWidget):
         
         # Add new content
         self._content_widget = widget
+        
+        # Ensure content widget sizes to its natural size (no expansion)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        
         self.content_layout.addWidget(widget)
         
-        # Set size policy for accordion behavior
-        # Content should size naturally, not stretch to fill space
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        # Set size policy for the panel itself - size to content
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
     def toggle_collapse(self):
         """Toggle between collapsed and expanded states."""
@@ -217,8 +240,19 @@ class CollapsiblePanel(QWidget):
             
         self.is_collapsed = collapsed
         
-        # Update arrow indicator
+        # Update arrow status indicator (▶ = hidden, ▼ = visible)
         self.arrow_label.setText("▶" if collapsed else "▼")
+        
+        # Update size policy based on collapse state
+        # When collapsed: Fixed height (just tab bar, no expansion)
+        # When expanded: Minimum (size to content, can be resized)
+        if collapsed:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.setFixedHeight(21)  # Use setFixedHeight for absolute lock
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            self.setMaximumHeight(16777215)  # Remove height restriction
+            self.setMinimumHeight(0)  # Allow natural sizing
         
         # Cancel any existing animation
         if self._animation:
@@ -228,6 +262,11 @@ class CollapsiblePanel(QWidget):
         if collapsed:
             start_height = self.content_container.height()
             end_height = 0
+            # Also hide immediately to prevent layout issues
+            if start_height == 0:
+                self.content_container.hide()
+                self.content_container.setMaximumHeight(0)
+                return  # Skip animation if already collapsed
         else:
             # Ensure widget is visible to measure its size
             self.content_container.setMaximumHeight(16777215)  # Qt max height
