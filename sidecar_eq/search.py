@@ -167,11 +167,11 @@ class SearchBar(QWidget):
         scroll_area.hide()  # Hidden until search results appear
         self.results_scroll_area = scroll_area
         
-        layout.addWidget(scroll_area)
+        layout.addWidget(scroll_area, stretch=1)  # Expand to fill space
         
         # Welcome/help panel (shows when no search performed)
         self.welcome_panel = self._create_welcome_panel()
-        layout.addWidget(self.welcome_panel)
+        layout.addWidget(self.welcome_panel, stretch=1)  # Expand to fill space
         
         self.setLayout(layout)
         
@@ -232,6 +232,30 @@ class SearchBar(QWidget):
         
         panel.setHtml(html)
         return panel
+    
+    def _update_welcome_panel_for_no_library(self):
+        """Update welcome panel to show 'no library indexed' message."""
+        html = """
+        <div style='max-width: 600px; margin: 0 auto; padding: 15px;'>
+            <p style='color: #ff6b6b; font-size: 14px; margin-bottom: 15px;'>🔍 No Library Indexed</p>
+            
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                To search your music library, you need to index a folder first.
+            </p>
+            
+            <p style='color: #4a9eff; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                <strong>How to index:</strong><br>
+                1. Click <strong>File → Index Folder...</strong><br>
+                2. Select your music folder<br>
+                3. Wait for indexing to complete
+            </p>
+            
+            <p style='color: #808080; font-size: 10px; font-style: italic; margin-top: 15px;'>
+                Once indexed, you can search for artists, albums, and songs instantly!
+            </p>
+        </div>
+        """
+        self.welcome_panel.setHtml(html)
     
     def _create_category_list(self, title: str, icon: str) -> QWidget:
         """Create a categorized results list widget.
@@ -371,8 +395,9 @@ class SearchBar(QWidget):
         self._last_search_query = query
         
         if not self.library:
-            # No library loaded yet
+            # No library loaded yet - show helpful message instead of welcome
             self.results_scroll_area.hide()
+            self._update_welcome_panel_for_no_library()
             self.welcome_panel.show()
             return
             

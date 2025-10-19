@@ -36,6 +36,20 @@ class QueueTableView(QTableView):
             parent: Parent widget, defaults to None.
         """
         super().__init__(parent)
+        # Preference: whether to paint stripes/hint when empty
+        self._show_empty_stripes = True
+
+    def setShowEmptyStripes(self, enabled: bool):
+        """Enable/disable empty-state stripes and hint text.
+
+        Args:
+            enabled: True to show stripes/hint when the queue is empty.
+        """
+        self._show_empty_stripes = bool(enabled)
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
 
     def sizeHint(self):
         """Return a height based on a fixed number of visible rows."""
@@ -71,6 +85,36 @@ class QueueTableView(QTableView):
         else:
             # Pass other keys to parent handler
             super().keyPressEvent(event)
+
+    def paintEvent(self, event):
+        """Paint subtle background stripes when there are no rows.
+
+        This mimics classic media apps by suggesting list rows even when empty,
+        making the drop target and empty state more understandable at a glance.
+        """
+        super().paintEvent(event)
+        model = self.model()
+        if not self._show_empty_stripes or model is None or model.rowCount() > 0:
+            return
+
+        # Draw alternating translucent stripes across the viewport
+        vp = self.viewport()
+        painter = QPainter(vp)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        stripe_h = max(20, self.verticalHeader().defaultSectionSize())
+        y = 0
+        toggle = False
+        c1 = QColor(255, 255, 255, 10)  # very subtle
+        c2 = QColor(255, 255, 255, 0)
+        while y < vp.height():
+            painter.fillRect(0, y, vp.width(), stripe_h, c1 if toggle else c2)
+            toggle = not toggle
+            y += stripe_h
+
+        # Hint text in the top-left
+        painter.setPen(QColor(255, 255, 255, 120))
+        painter.drawText(12, 18, "Drop songs here or click Add")
+        painter.end()
 
 
 class IconButton(QPushButton):

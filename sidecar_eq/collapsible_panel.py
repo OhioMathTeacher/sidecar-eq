@@ -17,7 +17,7 @@ try:
 except ImportError:
     USE_MODERN_UI = False
 
-HEADER_HEIGHT = 21
+HEADER_HEIGHT = 18
 
 
 class CollapsiblePanel(QWidget):
@@ -53,10 +53,8 @@ class CollapsiblePanel(QWidget):
         self._animation = None
         self._setup_ui()
         self._lock_content_height = False
-        self._header_widgets = {self.title_frame, self.title_label, self.arrow_label}
-        for widget in self._header_widgets:
-            widget.setCursor(Qt.CursorShape.PointingHandCursor)
-            widget.installEventFilter(self)
+        self._header_widgets = set()
+        # Note: Headers are NOT clickable - only the View menu controls panel visibility
 
         header_height = max(1, self.title_frame.maximumHeight() or HEADER_HEIGHT)
         
@@ -88,8 +86,8 @@ class CollapsiblePanel(QWidget):
         self.title_frame = QFrame()
         self.title_frame.setFrameShape(QFrame.Shape.StyledPanel)
         
-        # Fixed height - 175% of font size (9pt * 1.75 ≈ 21px)
-        # Use both setFixedHeight and size policy to prevent expansion
+    # Fixed height for a compact header
+    # Use both setFixedHeight and size policy to prevent expansion
         self.title_frame.setFixedHeight(HEADER_HEIGHT)
         self.title_frame.setMinimumHeight(HEADER_HEIGHT)
         self.title_frame.setMaximumHeight(HEADER_HEIGHT)
@@ -102,7 +100,7 @@ class CollapsiblePanel(QWidget):
                 QFrame {
                     background: transparent;
                     border: none;
-                    padding: 2px 0px;
+                    padding: 0px 0px;
                 }
                 """
             )
@@ -112,17 +110,17 @@ class CollapsiblePanel(QWidget):
                 QFrame {
                     background: transparent;
                     border: none;
-                    padding: 2px 0px;
+                    padding: 0px 0px;
                 }
             """)
         
         title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(8, 2, 8, 2)  # Minimal padding - 2px vertical
+        title_layout.setContentsMargins(8, 1, 8, 1)  # Minimal padding - 1px vertical
         title_layout.setSpacing(6)
         
         # Arrow status indicator (▼ visible, ▶ hidden) - NOT clickable, just shows state
         self.arrow_label = QLabel("▼")
-        self.arrow_label.setFixedSize(10, HEADER_HEIGHT - 4)  # Lock arrow size to prevent expansion
+        self.arrow_label.setFixedSize(10, HEADER_HEIGHT - 2)  # Lock arrow size to prevent expansion
         self.arrow_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if USE_MODERN_UI:
             self.arrow_label.setStyleSheet(f"""
@@ -149,7 +147,7 @@ class CollapsiblePanel(QWidget):
         # Title text
         self.title_label = QLabel(self.title)
         self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.title_label.setMaximumHeight(HEADER_HEIGHT - 4)  # Lock title label height
+        self.title_label.setMaximumHeight(HEADER_HEIGHT - 2)  # Lock title label height
         if USE_MODERN_UI:
             # Use system font for professional look
             title_font = SystemFonts.get_system_font(size=9, weight="Semibold")
@@ -271,6 +269,8 @@ class CollapsiblePanel(QWidget):
             self.setMaximumHeight(header_height)
             self.content_container.setMinimumHeight(0)
             self.content_container.setMaximumHeight(0)
+            # Collapsed content should never take stretch
+            self.set_content_stretch(False)
             start_height = self.content_container.height()
             end_height = 0
         else:
@@ -284,6 +284,8 @@ class CollapsiblePanel(QWidget):
             current_height = self.content_container.height()
             start_height = current_height if current_height > 0 else 0
             end_height = self.content_container.sizeHint().height()
+            # By default, expanded panels size to content; outer layout will decide which one stretches
+            self.set_content_stretch(False)
 
         # Apply locking preferences to updated state
         self._apply_size_policies()
@@ -313,6 +315,26 @@ class CollapsiblePanel(QWidget):
         self.collapsed.emit(collapsed)
         if not collapsed:
             self._schedule_geometry_update()
+
+    def set_content_stretch(self, expand: bool):
+        """Control whether the content area stretches to fill extra space.
+        
+        When True, the content_container gets stretch factor 1 inside this panel.
+        When False, it sizes to content (stretch 0).
+        """
+        try:
+            lay = self.layout()
+            # Title frame is index 0, content container is index 1
+            if lay is not None and lay.count() >= 2:
+                lay.setStretch(0, 0)
+                lay.setStretch(1, 1 if expand else 0)
+            # Also ensure the inner content widget stretches within the content_layout
+            if self._content_widget is not None and self.content_layout is not None:
+                idx = self.content_layout.indexOf(self._content_widget)
+                if idx != -1:
+                    self.content_layout.setStretch(idx, 1 if expand else 0)
+        except Exception:
+            pass
         
     def set_title(self, title: str):
         """Update the panel title.
@@ -351,10 +373,14 @@ class CollapsiblePanel(QWidget):
         """Apply size policies according to the lock preference."""
         if self._content_widget is None:
             return
-        vertical_policy = QSizePolicy.Policy.Fixed if self._lock_content_height else QSizePolicy.Policy.Minimum
-        self._content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, vertical_policy)
-        container_policy = QSizePolicy.Policy.Fixed if self._lock_content_height else QSizePolicy.Policy.Minimum
-        self.content_container.setSizePolicy(QSizePolicy.Policy.Expanding, container_policy)
+        # When locked, the content should size exactly to its hint (Fixed).
+        # When unlocked, allow the content and container to expand and fill available space.
+        if self._lock_content_height:
+            self._content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.content_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        else:
+            self._content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.content_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def _schedule_geometry_update(self):
         if self.is_collapsed or not self._lock_content_height or self._content_widget is None:

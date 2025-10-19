@@ -29,7 +29,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 from PySide6.QtCore import QDateTime, QModelIndex, QObject, QSize, Qt, QThread, QTimer, Signal, QPoint
-from PySide6.QtGui import QAction, QIcon, QKeyEvent, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QIcon, QKeyEvent, QKeySequence, QPainter, QPixmap, QColor
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -40,6 +40,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QFrame,
+    QDialog,
     QListWidgetItem,
     QMainWindow,
     QMenu,
@@ -70,6 +72,7 @@ from .scrolling_label import ScrollingLabel
 from .search import SearchBar
 from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
+from .settings_panel import SettingsDialog
 from .workers import BackgroundAnalysisWorker
 
 # Media file extensions
@@ -162,6 +165,40 @@ class CustomTableHeader(QHeaderView):
             logical_index = self.logicalIndex(visual_index)
             if logical_index != visual_index:
                 self.moveSection(self.visualIndex(visual_index), visual_index)
+
+
+class _StripesOverlay(QWidget):
+    """A transparent overlay that paints subtle stripes to suggest rows when the queue is empty."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._stripe_h = 24
+        self._c1 = QColor(255, 255, 255, 6)  # very subtle
+        self._c2 = QColor(255, 255, 255, 0)
+
+        # Optional hint label
+        self._hint = QLabel("Drop songs here or use Add", self)
+        self._hint.setStyleSheet("color: rgba(255,255,255,0.35); font-size: 11px; padding: 4px 8px;")
+        self._hint.move(12, 12)
+
+    def resizeEvent(self, event):
+        self._hint.move(12, 12)
+        return super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, False)
+        y = 0
+        h = self.height()
+        w = self.width()
+        toggle = False
+        while y < h:
+            p.fillRect(0, y, w, self._stripe_h, self._c1 if toggle else self._c2)
+            toggle = not toggle
+            y += self._stripe_h
+        p.end()
 
 
 class MainWindow(QMainWindow):
@@ -275,12 +312,18 @@ class MainWindow(QMainWindow):
             self.table.setHorizontalHeader(custom_header)
             
             header = self.table.horizontalHeader()
-            header.setStretchLastSection(True)  # Stretch last column to fill space
-            
-            # Column resize modes (15 columns total now: Lookup + Status + 13 data columns)
+            header.setStretchLastSection(False)  # We'll stretch the Title column instead
+            # Tooltips for icon-only columns
             header.setSectionResizeMode(0, QHeaderView.Fixed)  # Lookup (globe) - fixed width
             header.setSectionResizeMode(1, QHeaderView.Fixed)  # Status (play indicator) - fixed width
-            for col in range(2, 15):  # All other columns user-resizable
+            if self.model is not None:
+                self.model.setHeaderData(0, Qt.Horizontal, "Lookup", Qt.ToolTipRole)
+                self.model.setHeaderData(1, Qt.Horizontal, "Status", Qt.ToolTipRole)
+            
+            # Column resize modes (15 columns total now: Lookup + Status + 13 data columns)
+            # Make Title column (2) stretch to consume remaining width
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            for col in range(3, 15):  # All other columns user-resizable
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
             
             # Set initial column widths (optimized for new metadata fields)
@@ -317,6 +360,8 @@ class MainWindow(QMainWindow):
             
             # Hide vertical header (row numbers) for cleaner look
             self.table.verticalHeader().setVisible(False)
+            # Improve at-a-glance readability with alternating rows
+            self.table.setAlternatingRowColors(True)
             
             # Alternating row colors for better readability
             self.table.setAlternatingRowColors(True)
@@ -367,11 +412,11 @@ class MainWindow(QMainWindow):
             self.queue_panel.lock_content_height(True)
             self.table.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             self.table.setMinimumHeight(100)
-            central_layout.addWidget(self.queue_panel, stretch=0)  # Size to content
+            central_layout.addWidget(self.queue_panel, stretch=0)  # Dynamic stretch applied later
             
             # Panel 2: EQ & Waveform (collapsible, accordion style) - will be populated in _build_side_panel
             self.eq_panel = CollapsiblePanel("EQ & Waveform")
-            central_layout.addWidget(self.eq_panel, stretch=0)  # Size to content
+            central_layout.addWidget(self.eq_panel, stretch=0)  # Dynamic stretch applied later
             
             # Panel 3: Search (collapsible, accordion style)
             self.search_panel = CollapsiblePanel("Artist Information & Search")
@@ -379,10 +424,10 @@ class MainWindow(QMainWindow):
                 self.search_bar.setMinimumHeight(250)
                 self.search_panel.set_content(self.search_bar)
                 self.search_panel.lock_content_height(True)
-            central_layout.addWidget(self.search_panel, stretch=0)  # Size to content
+            central_layout.addWidget(self.search_panel, stretch=0)  # Dynamic stretch applied later
             
-            # Add stretchable spacer at the bottom to push all panels to top
-            central_layout.addStretch(1)
+            # Store central layout for dynamic stretch updates
+            self._central_layout = central_layout
             
             # Load saved collapse states
             self._load_panel_states()
@@ -437,12 +482,12 @@ class MainWindow(QMainWindow):
             pass
 
         self.setWindowTitle('Sidecar EQ')
-        self.resize(1000, 640)
         
-        # Allow window to resize when dragged between monitors
-        # Don't set a maximum size - let Qt handle screen boundaries
-        # Minimum size allows collapsing to just miniplayer + title bars
-        self.setMinimumSize(800, 150)  # Allow shrinking to miniplayer + collapsed panels
+        # Fixed window size to prevent layout issues with collapsible panels
+        self.setFixedSize(1000, 640)
+        
+        # Disable window resize (prevents grip/border dragging)
+        self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint, True)
         
         # Apply clean dark theme with modern fonts and compact styling
         if USE_MODERN_UI:
@@ -462,7 +507,8 @@ class MainWindow(QMainWindow):
                     selection-color: white;
                     font-family: '{system_font}';
                     font-size: 11px;
-                    alternate-background-color: {ModernColors.BACKGROUND_PRIMARY};
+                    /* Make alternating rows slightly more contrasted for better visibility */
+                    alternate-background-color: {ModernColors.BACKGROUND_TERTIARY};
                 }}
                 QTableView::item {{
                     padding: 2px 4px;
@@ -518,6 +564,8 @@ class MainWindow(QMainWindow):
                     selection-background-color: #0d4f8f;
                     selection-color: white;
                     font-size: 11px;
+                    /* Subtle but visible zebra stripes */
+                    alternate-background-color: #2e2e2e;
                 }
                 QTableView QHeaderView::section {
                     background: #2d2d2d;
@@ -549,6 +597,9 @@ class MainWindow(QMainWindow):
                 }
             """)
     
+        # Apply user interface preferences (alternating stripes, empty-state stripes, layout default)
+        QTimer.singleShot(0, self._apply_ui_prefs_from_store)
+
     def showEvent(self, event):
         """Called when the window is shown. Auto-select first row if queue has items."""
         super().showEvent(event)
@@ -672,6 +723,7 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self):
         """Status bar for messages only (waveform now in split panel)."""
         sb = self.statusBar()
+        sb.setSizeGripEnabled(False)  # Disable resize grip (window is fixed size)
         sb.showMessage("Ready")
 
 
@@ -1311,14 +1363,6 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, _apply)
 
-    def resizeEvent(self, event):
-        response = super().resizeEvent(event)
-        try:
-            self._sync_queue_panel_height()
-        except Exception:
-            pass
-        return response
-
     def _build_menubar(self):
         """Create a macOS-native menubar with File/Playback/View/Help."""
         mb = self.menuBar()
@@ -1327,11 +1371,11 @@ class MainWindow(QMainWindow):
         m_file = mb.addMenu("File")
         act_add_files = QAction("Add Files…", self); act_add_files.triggered.connect(self.on_add_files)
         act_add_folder = QAction("Add Folder…", self); act_add_folder.triggered.connect(self.on_add_folder)
-        
+
         # Dynamic Plex submenu - lists all configured servers with their users
         self._plex_menu = m_file.addMenu("Browse Plex")
         self._update_plex_menu()  # Populate with servers
-        
+
         act_save_pl = QAction("Save Playlist…", self); act_save_pl.triggered.connect(self.on_save_playlist)
         act_load_pl = QAction("Load Playlist…", self); act_load_pl.triggered.connect(self.on_load_playlist)
         act_refresh_meta = QAction("Refresh Metadata", self); act_refresh_meta.triggered.connect(self.on_refresh_metadata)
@@ -1346,50 +1390,65 @@ class MainWindow(QMainWindow):
 
         # Settings menu
         m_settings = mb.addMenu("Settings")
+        act_prefs = QAction("Preferences…", self)
+        act_prefs.setShortcut(QKeySequence.Preferences)
+        act_prefs.triggered.connect(self._open_settings_dialog)
+        m_settings.addAction(act_prefs)
+
         act_manage_plex = QAction("Manage Plex Servers…", self)
         act_manage_plex.triggered.connect(self._open_plex_account_manager)
         m_settings.addAction(act_manage_plex)
 
         # Playback menu
         m_play = mb.addMenu("Playback")
-        act_play = QAction("Play / Pause", self); act_play.setShortcut(Qt.Key_Space); act_play.triggered.connect(self.on_play)
-        act_stop = QAction("Stop", self); act_stop.triggered.connect(self.on_stop)
-        act_next = QAction("Next", self); act_next.setShortcut(QKeySequence.MoveToNextWord); act_next.triggered.connect(self.on_next)
-        for a in [act_play, act_stop, act_next]: m_play.addAction(a)
+        act_play = QAction("Play / Pause", self)
+        act_play.setShortcut(Qt.Key_Space)
+        act_play.triggered.connect(self.on_play)
+        m_play.addAction(act_play)
+
+        act_stop = QAction("Stop", self)
+        act_stop.triggered.connect(self.on_stop)
+        m_play.addAction(act_stop)
+
+        act_next = QAction("Next", self)
+        act_next.setShortcut(QKeySequence.MoveToNextWord)
+        act_next.triggered.connect(self.on_next)
+        m_play.addAction(act_next)
 
         # View menu (EQ Opacity + Master Volume)
         from PySide6.QtGui import QActionGroup
         m_view = mb.addMenu("View")
-        
+
         # Layout presets submenu
         m_layout = m_view.addMenu("Layout Presets")
-        layout_grp = QActionGroup(self); layout_grp.setExclusive(True)
-        
+        layout_grp = QActionGroup(self)
+        layout_grp.setExclusive(True)
+
         act_full_view = QAction("Full View", self)
         act_full_view.setCheckable(True)
         act_full_view.setChecked(True)  # Default
         act_full_view.triggered.connect(lambda: self._apply_layout_preset("full_view"))
         layout_grp.addAction(act_full_view)
         m_layout.addAction(act_full_view)
-        
+
         act_queue_only = QAction("Queue Only", self)
         act_queue_only.setCheckable(True)
         act_queue_only.triggered.connect(lambda: self._apply_layout_preset("queue_only"))
         layout_grp.addAction(act_queue_only)
         m_layout.addAction(act_queue_only)
-        
+
         act_eq_only = QAction("EQ Only", self)
         act_eq_only.setCheckable(True)
         act_eq_only.triggered.connect(lambda: self._apply_layout_preset("eq_only"))
         layout_grp.addAction(act_eq_only)
         m_layout.addAction(act_eq_only)
-        
+
         act_search_only = QAction("Search Only", self)
         act_search_only.setCheckable(True)
         act_search_only.triggered.connect(lambda: self._apply_layout_preset("search_only"))
         layout_grp.addAction(act_search_only)
         m_layout.addAction(act_search_only)
-        
+
         # Store layout actions for later reference
         self._layout_actions = {
             "full_view": act_full_view,
@@ -1397,9 +1456,9 @@ class MainWindow(QMainWindow):
             "eq_only": act_eq_only,
             "search_only": act_search_only,
         }
-        
+
         m_view.addSeparator()
-        
+
         # Master Volume submenu
         m_master_vol = m_view.addMenu("Master Volume")
         vol_grp = QActionGroup(self); vol_grp.setExclusive(True)
@@ -1414,9 +1473,9 @@ class MainWindow(QMainWindow):
         _add_master_vol("Master Volume • 100% (Default)", 1.00)
         # Default to 100%
         self._master_volume_actions["Master Volume • 100% (Default)"].setChecked(True)
-        
+
         m_view.addSeparator()
-        
+
         # EQ Opacity submenu
         grp = QActionGroup(self); grp.setExclusive(True)
         self._eq_opacity_actions = {}
@@ -1431,9 +1490,9 @@ class MainWindow(QMainWindow):
         self._eq_opacity_actions["EQ Plate Opacity • Medium (60%)"].setChecked(True)
         # Apply after side panel builds (safe-call)
         QTimer.singleShot(0, lambda: self._set_eq_opacity(0.60))
-        
+
         m_view.addSeparator()
-        
+
         # LED Meters toggle
         self._led_meters_action = QAction("Show LED Meters", self)
         self._led_meters_action.setCheckable(True)
@@ -1452,6 +1511,34 @@ class MainWindow(QMainWindow):
         act_about = QAction("About Sidecar EQ", self)
         act_about.triggered.connect(self._show_about_dialog)
         m_help.addAction(act_about)
+
+    def _open_settings_dialog(self):
+        try:
+            dlg = SettingsDialog(self, self)
+            dlg.exec()
+        except Exception as e:
+            print(f"[SidecarEQ] Settings dialog failed: {e}")
+
+    def _apply_ui_prefs_from_store(self):
+        """Load UI preferences from the store and apply to the current UI."""
+        try:
+            prefs = store.get_record("ui:settings") or {}
+            # Queue alternating row colors
+            alt = bool(prefs.get("queue_alternating_stripes", True))
+            if getattr(self, "table", None) is not None:
+                self.table.setAlternatingRowColors(alt)
+                # Empty-state stripes
+                empty_stripes = bool(prefs.get("queue_empty_stripes", True))
+                if hasattr(self.table, "setShowEmptyStripes"):
+                    self.table.setShowEmptyStripes(empty_stripes)
+
+            # Layout preset behavior
+            remember = bool(prefs.get("remember_layout", True))
+            default_layout = prefs.get("default_layout_preset", "full_view")
+            if not remember and default_layout in ("full_view", "queue_only", "eq_only", "search_only"):
+                self._apply_layout_preset(default_layout)
+        except Exception as e:
+            print(f"[SidecarEQ] Applying UI prefs failed: {e}")
     
     def _show_about_dialog(self):
         """Display the About dialog with app information."""
@@ -2789,6 +2876,9 @@ Licensed under AGPL v3</p>
             if hasattr(self, 'search_bar') and self.search_bar:
                 try:
                     self.search_bar.search_for_track(title or "Unknown", artist, album)
+                    # Expand the search panel to show results
+                    if hasattr(self, 'search_panel') and self.search_panel.is_collapsed:
+                        self.search_panel.set_collapsed(False)
                 except Exception as e:
                     print(f"[App] Failed to auto-search: {e}")
             
@@ -3540,9 +3630,89 @@ Licensed under AGPL v3</p>
             if hasattr(self, 'search_panel'):
                 self.search_panel.set_collapsed(False)
             
+            # Set initial stretch factors so last visible panel fills space
+            self._update_panel_stretch_factors()
+            
             print(f"[App] Initialized panels: all expanded (default)")
         except Exception as e:
             print(f"[App] Failed to load panel states: {e}")
+    
+    def _update_panel_stretch_factors(self):
+        """Update stretch factors so the last visible panel fills remaining space.
+        
+        The last expanded (visible) panel should have stretch=1 to fill all available space.
+        All collapsed panels should have stretch=0 and be completely minimized.
+        """
+        try:
+            from PySide6.QtWidgets import QSizePolicy
+            from .collapsible_panel import CollapsiblePanel
+            
+            if not hasattr(self, '_central_layout'):
+                return
+            
+            # Get all panels in order
+            panels = []
+            if hasattr(self, 'queue_panel'):
+                panels.append(self.queue_panel)
+            if hasattr(self, 'eq_panel'):
+                panels.append(self.eq_panel)
+            if hasattr(self, 'search_panel'):
+                panels.append(self.search_panel)
+            
+            # Find the last visible (non-collapsed) panel
+            last_visible = None
+            for panel in reversed(panels):
+                if panel.isVisible() and not panel.is_collapsed:
+                    last_visible = panel
+                    break
+            
+            # Update stretch factors for all panels
+            layout = self._central_layout
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item and item.widget() in panels:
+                    panel = item.widget()
+                    
+                    # Collapsed panels: stretch=0, Fixed size policy, minimal height
+                    if not panel.isVisible() or panel.is_collapsed:
+                        layout.setStretch(i, 0)
+                        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                        panel.updateGeometry()
+                    # Last visible panel: stretch=1 to fill remaining space
+                    elif panel is last_visible:
+                        layout.setStretch(i, 1)
+                        # Allow this panel to expand fully
+                        if getattr(panel, "_lock_content_height", False):
+                            panel.lock_content_height(False)
+                        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                        # Ensure internal content area also stretches
+                        if isinstance(panel, CollapsiblePanel):
+                            panel.set_content_stretch(True)
+                        # If this is the queue panel, allow the table to expand vertically
+                        try:
+                            if panel is getattr(self, 'queue_panel', None) and getattr(self, 'table', None) is not None:
+                                self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                        except Exception:
+                            pass
+                        panel.updateGeometry()
+                    # Other visible panels: stretch=0, size to content
+                    else:
+                        layout.setStretch(i, 0)
+                        # Make these panels size-to-content and not steal space
+                        if not getattr(panel, "_lock_content_height", False):
+                            panel.lock_content_height(True)
+                        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                        # If queue panel is not the last visible, keep the table sizing to content
+                        try:
+                            if panel is getattr(self, 'queue_panel', None) and getattr(self, 'table', None) is not None:
+                                self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                        except Exception:
+                            pass
+                        panel.updateGeometry()
+            
+            print(f"[App] Updated panel stretch factors, last visible: {last_visible.title if last_visible else 'none'}")
+        except Exception as e:
+            print(f"[App] Failed to update panel stretch factors: {e}")
     
     def _save_panel_states(self):
         """Save current collapse states for all panels."""
@@ -3571,6 +3741,10 @@ Licensed under AGPL v3</p>
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(True)
+                # Hide other panel headers entirely in this preset
+                self.queue_panel.setVisible(True)
+                self.eq_panel.setVisible(False)
+                self.search_panel.setVisible(False)
                 print("[App] Applied Queue Only layout")
                 
             elif preset == "eq_only":
@@ -3578,6 +3752,9 @@ Licensed under AGPL v3</p>
                 self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(False)
                 self.search_panel.set_collapsed(True)
+                self.queue_panel.setVisible(False)
+                self.eq_panel.setVisible(True)
+                self.search_panel.setVisible(False)
                 print("[App] Applied EQ Only layout")
                 
             elif preset == "search_only":
@@ -3585,6 +3762,9 @@ Licensed under AGPL v3</p>
                 self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(False)
+                self.queue_panel.setVisible(False)
+                self.eq_panel.setVisible(False)
+                self.search_panel.setVisible(True)
                 print("[App] Applied Search Only layout")
                 
             elif preset == "full_view":
@@ -3592,13 +3772,16 @@ Licensed under AGPL v3</p>
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(False)
                 self.search_panel.set_collapsed(False)
+                self.queue_panel.setVisible(True)
+                self.eq_panel.setVisible(True)
+                self.search_panel.setVisible(True)
                 print("[App] Applied Full View layout")
+            
+            # Update stretch factors so last visible panel fills space
+            self._update_panel_stretch_factors()
             
             # Save the panel states
             self._save_panel_states()
-            
-            # Resize window to fit
-            QTimer.singleShot(300, lambda: self._resize_to_content())
             
         except Exception as e:
             print(f"[App] Failed to apply layout preset: {e}")
@@ -3614,53 +3797,15 @@ Licensed under AGPL v3</p>
             self._apply_layout_preset(presets[index])
     
     def _on_panel_toggled(self):
-        """Handle panel collapse/expand - accordion style window resize."""
+        """Handle panel collapse/expand - save state and update last visible panel stretch."""
         # Save the state
         self._save_panel_states()
         
-        # Resize window to fit content (accordion style)
-        # Delay slightly so the collapse animation can finish before measuring
-        delay_ms = 300
-        QTimer.singleShot(delay_ms, self._resize_to_content)
-        QTimer.singleShot(delay_ms, lambda: self._sync_queue_panel_height())
-    
-    def _resize_to_content(self):
-        """Resize the main window to fit its current content (accordion behavior)."""
-        try:
-            def _widget_height(widget):
-                if widget is None:
-                    return 0
-                height = widget.height()
-                if height <= 0:
-                    hint = widget.sizeHint()
-                    height = hint.height() if hint.isValid() else 0
-                return max(0, height)
-
-            total_height = 0
-            total_height += _widget_height(self.menuBar())
-            total_height += _widget_height(getattr(self, "toolbar", None))
-            total_height += _widget_height(getattr(self, "queue_panel", None))
-            total_height += _widget_height(getattr(self, "eq_panel", None))
-            total_height += _widget_height(getattr(self, "search_panel", None))
-            total_height += _widget_height(self.statusBar())
-            total_height += 16  # padding for borders/margins
-
-            central = self.centralWidget()
-            if central is not None:
-                central.adjustSize()
-
-            screen = self.screen()
-            max_height = screen.availableGeometry().height() if screen else total_height
-            new_height = min(total_height, max_height)
-            new_height = max(new_height, 200)
-
-            current_width = self.width()
-            self.resize(current_width, int(new_height))
-            print(f"[App] Window resized (accordion): {current_width}x{int(new_height)}")
-        except Exception as e:
-            print(f"[App] Failed to resize window: {e}")
-            import traceback
-            traceback.print_exc()
+        # Update stretch factors so last visible panel fills space
+        self._update_panel_stretch_factors()
+        
+        # Refresh panel geometry
+        QTimer.singleShot(300, lambda: self._sync_queue_panel_height())
     
     def _save_queue_state(self):
         """Save the current queue state to disk."""
