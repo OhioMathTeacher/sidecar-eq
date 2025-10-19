@@ -73,6 +73,7 @@ from .search import SearchBar
 from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
 from .settings_panel import SettingsDialog
+from .rack import RackView, OutputCanvas
 from .workers import BackgroundAnalysisWorker
 
 # Media file extensions
@@ -404,7 +405,8 @@ class MainWindow(QMainWindow):
             central_widget = QWidget()
             central_layout = QVBoxLayout()
             central_layout.setContentsMargins(0, 0, 0, 0)
-            central_layout.setSpacing(0)
+            # Add a little breathing room between collapsible panels to avoid cramped headers
+            central_layout.setSpacing(6)
             
             # Panel 1: Song Queue & Metadata (collapsible, accordion style)
             self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
@@ -434,6 +436,10 @@ class MainWindow(QMainWindow):
             
             central_widget.setLayout(central_layout)
             self.setCentralWidget(central_widget)
+            # Keep a handle to the classic central widget so we can swap to Rack Mode
+            self._classic_central = central_widget
+            self._rack_enabled = False
+            self._rack_container = None
             
             # Load saved queue state
             self._load_queue_state()
@@ -474,6 +480,12 @@ class MainWindow(QMainWindow):
             self._build_status_bar()
         except Exception:
             pass
+
+        # Build (but don't show) Rack UI shell so it's ready when toggled
+        try:
+            self._build_rack_ui()
+        except Exception as e:
+            print(f"[SidecarEQ] Rack UI build failed: {e}")
 
         # Wire signals last (player and widgets should exist)
         try:
@@ -1419,7 +1431,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QActionGroup
         m_view = mb.addMenu("View")
 
-        # Layout presets submenu
+    # Layout presets submenu
         m_layout = m_view.addMenu("Layout Presets")
         layout_grp = QActionGroup(self)
         layout_grp.setExclusive(True)
@@ -1459,6 +1471,13 @@ class MainWindow(QMainWindow):
 
         m_view.addSeparator()
 
+        # Rack Mode (experimental)
+        self._act_rack_mode = QAction("Rack Mode (experimental)", self)
+        self._act_rack_mode.setCheckable(True)
+        self._act_rack_mode.setChecked(False)
+        self._act_rack_mode.toggled.connect(self._set_rack_mode)
+        m_view.addAction(self._act_rack_mode)
+
         # Master Volume submenu
         m_master_vol = m_view.addMenu("Master Volume")
         vol_grp = QActionGroup(self); vol_grp.setExclusive(True)
@@ -1477,12 +1496,16 @@ class MainWindow(QMainWindow):
         m_view.addSeparator()
 
         # EQ Opacity submenu
-        grp = QActionGroup(self); grp.setExclusive(True)
+        grp = QActionGroup(self)
+        grp.setExclusive(True)
         self._eq_opacity_actions = {}
         def _add_opc(name, val):
-            act = QAction(name, self); act.setCheckable(True)
+            act = QAction(name, self)
+            act.setCheckable(True)
             act.triggered.connect(lambda: self._set_eq_opacity(val))
-            grp.addAction(act); m_view.addAction(act); self._eq_opacity_actions[name] = act
+            grp.addAction(act)
+            m_view.addAction(act)
+            self._eq_opacity_actions[name] = act
         _add_opc("EQ Plate Opacity • Low (30%)", 0.30)
         _add_opc("EQ Plate Opacity • Medium (60%)", 0.60)
         _add_opc("EQ Plate Opacity • High (90%)", 0.90)
@@ -1537,6 +1560,12 @@ class MainWindow(QMainWindow):
             default_layout = prefs.get("default_layout_preset", "full_view")
             if not remember and default_layout in ("full_view", "queue_only", "eq_only", "search_only"):
                 self._apply_layout_preset(default_layout)
+
+            # Rack Mode at startup (experimental)
+            rack_on = bool(prefs.get("rack_mode_startup", False))
+            if rack_on:
+                # delay a tick to let widgets finish building
+                QTimer.singleShot(0, lambda: self._set_rack_mode(True))
         except Exception as e:
             print(f"[SidecarEQ] Applying UI prefs failed: {e}")
     
@@ -1573,7 +1602,8 @@ Licensed under AGPL v3</p>
         """Set opacity on the EQ background plate (if present)."""
         try:
             bg = getattr(self, "_eq_bg_widget", None)
-            if not bg: return
+            if not bg:
+                return
             from PySide6.QtWidgets import QGraphicsOpacityEffect
             eff = getattr(self, "_eq_opacity_effect", None)
             if eff is None:
@@ -1641,7 +1671,7 @@ Licensed under AGPL v3</p>
             self._set_button_success_style(self._save_eq_btn)
             self._save_feedback_timer.start(3000)
             self.statusBar().showMessage("✓ EQ settings saved", 2000)
-            print(f"[App] EQ settings saved")
+            print("[App] EQ settings saved")
         except Exception as e:
             self.statusBar().showMessage(f"Save failed: {e}", 3000)
             print(f"[App] Save EQ failed: {e}")
@@ -1676,7 +1706,7 @@ Licensed under AGPL v3</p>
             
             self._save_feedback_timer.start(3000)
             self.statusBar().showMessage("✓ Volume & EQ saved", 2000)
-            print(f"[App] Both volume and EQ saved")
+            print("[App] Both volume and EQ saved")
         except Exception as e:
             self.statusBar().showMessage(f"Save failed: {e}", 3000)
             print(f"[App] Save both failed: {e}")
@@ -1848,7 +1878,8 @@ Licensed under AGPL v3</p>
 
     def on_next(self):
         if self.current_row is None:
-            self._play_row(0); return
+            self._play_row(0)
+            return
         self._play_row(self.current_row + 1)
 
     def on_add_based_on_source(self):
@@ -1867,7 +1898,8 @@ Licensed under AGPL v3</p>
 
     def on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Add Folder")
-        if not folder: return
+        if not folder:
+            return
         paths = []
         for root, _, files in os.walk(folder):
             for name in files:
@@ -2715,13 +2747,15 @@ Licensed under AGPL v3</p>
 
     def on_save_playlist(self):
         out, _ = QFileDialog.getSaveFileName(self, "Save Playlist (JSON)", "", "JSON (*.json)")
-        if not out: return
+        if not out:
+            return
         playlist.save_json(self.model.paths(), out)
         self.statusBar().showMessage(f"Saved playlist to {out}")
 
     def on_load_playlist(self):
         inp, _ = QFileDialog.getOpenFileName(self, "Load Playlist (JSON or M3U)", "", "Playlists (*.json *.m3u *.m3u8)")
-        if not inp: return
+        if not inp:
+            return
         suffix = Path(inp).suffix.lower()
         if suffix == ".json":
             paths = playlist.load_json(inp)
@@ -2756,7 +2790,8 @@ Licensed under AGPL v3</p>
         pl_id = None
         for t, pid in playlists:
             if t == title:
-                pl_id = pid; break
+                pl_id = pid
+                break
         if not pl_id:
             QMessageBox.warning(self, "Plex", "Selected playlist not found.")
             return
@@ -2940,7 +2975,7 @@ Licensed under AGPL v3</p>
                 self._apply_volume_setting(saved_volume)
             else:
                 # No saved volume - use default 75% for new tracks
-                print(f"[App] ⚠️  No saved volume found, defaulting to 75%")
+                print("[App] ⚠️  No saved volume found, defaulting to 75%")
                 self._apply_volume_setting(75)
                 
         except Exception as e:
@@ -3008,7 +3043,7 @@ Licensed under AGPL v3</p>
                     if 'suggested_volume' in analysis_data:
                         self._apply_volume_setting(analysis_data['suggested_volume'])
                 else:
-                    print(f"[App] Skipping volume from analysis (user adjusted manually)")
+                    print("[App] Skipping volume from analysis (user adjusted manually)")
                 
                 lufs = analysis_result.get('analysis_data', {}).get('loudness_lufs', -23)
                 self.statusBar().showMessage(f"Playing: {Path(path).stem} (analyzed: {lufs:.1f} LUFS - settings applied)")
@@ -3033,7 +3068,7 @@ Licensed under AGPL v3</p>
                 # Handle None or invalid values - default to 75% (mid-range)
                 if suggested_volume is None:
                     volume = 75
-                    print(f"[App] ⚠️  Volume is None, defaulting to 75%")
+                    print("[App] ⚠️  Volume is None, defaulting to 75%")
                 else:
                     # Clamp to valid range (0-100)
                     volume = max(0, min(100, suggested_volume))
@@ -3128,13 +3163,13 @@ Licensed under AGPL v3</p>
                 # Start simulation for all meters
                 for meter in self._led_meters:
                     meter.enable_simulation(True)
-                print(f"[App] LED meters started (playback active)")
+                print("[App] LED meters started (playback active)")
             else:
                 # Stop simulation
                 for meter in self._led_meters:
                     meter.enable_simulation(False)
                 if not is_playing:
-                    print(f"[App] LED meters stopped (no playback)")
+                    print("[App] LED meters stopped (no playback)")
         except Exception as e:
             print(f"[App] Error updating LED meter playback state: {e}")
     
@@ -3554,13 +3589,6 @@ Licensed under AGPL v3</p>
             return track_data
         else:
             return None
-        
-        # Return in analyzer format for consistency
-        return {
-            'gains_db': eq_settings,
-            'suggested_volume': suggested_volume,
-            'bands_hz': [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-        }
     
     def _store_analysis_for_video(self, video_path: str, analysis_data: dict):
         """Store analysis data for a video file using the original video path as key."""
@@ -3633,7 +3661,7 @@ Licensed under AGPL v3</p>
             # Set initial stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
             
-            print(f"[App] Initialized panels: all expanded (default)")
+            print("[App] Initialized panels: all expanded (default)")
         except Exception as e:
             print(f"[App] Failed to load panel states: {e}")
     
@@ -3678,23 +3706,35 @@ Licensed under AGPL v3</p>
                         layout.setStretch(i, 0)
                         panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                         panel.updateGeometry()
-                    # Last visible panel: stretch=1 to fill remaining space
+                    # Last visible panel: stretch based on preset
                     elif panel is last_visible:
-                        layout.setStretch(i, 1)
-                        # Allow this panel to expand fully
-                        if getattr(panel, "_lock_content_height", False):
-                            panel.lock_content_height(False)
-                        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-                        # Ensure internal content area also stretches
-                        if isinstance(panel, CollapsiblePanel):
-                            panel.set_content_stretch(True)
-                        # If this is the queue panel, allow the table to expand vertically
-                        try:
-                            if panel is getattr(self, 'queue_panel', None) and getattr(self, 'table', None) is not None:
-                                self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-                        except Exception:
-                            pass
-                        panel.updateGeometry()
+                        preset = getattr(self, "_current_layout_preset", None)
+                        if preset == "eq_only" and panel is getattr(self, 'eq_panel', None):
+                            # In EQ-only mode, keep EQ sized-to-content; do NOT stretch
+                            layout.setStretch(i, 0)
+                            if not getattr(panel, "_lock_content_height", False):
+                                panel.lock_content_height(True)
+                            panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                            if isinstance(panel, CollapsiblePanel):
+                                panel.set_content_stretch(False)
+                            panel.updateGeometry()
+                        else:
+                            # Default behavior: last visible fills space
+                            layout.setStretch(i, 1)
+                            # Allow this panel to expand fully
+                            if getattr(panel, "_lock_content_height", False):
+                                panel.lock_content_height(False)
+                            panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                            # Ensure internal content area also stretches
+                            if isinstance(panel, CollapsiblePanel):
+                                panel.set_content_stretch(True)
+                            # If this is the queue panel, allow the table to expand vertically
+                            try:
+                                if panel is getattr(self, 'queue_panel', None) and getattr(self, 'table', None) is not None:
+                                    self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                            except Exception:
+                                pass
+                            panel.updateGeometry()
                     # Other visible panels: stretch=0, size to content
                     else:
                         layout.setStretch(i, 0)
@@ -3736,6 +3776,8 @@ Licensed under AGPL v3</p>
             preset: One of "full_view", "queue_only", "eq_only", "search_only"
         """
         try:
+            # Remember current preset for stretch logic nuances
+            self._current_layout_preset = preset
             if preset == "queue_only":
                 # Queue Only
                 self.queue_panel.set_collapsed(False)
@@ -3745,6 +3787,15 @@ Licensed under AGPL v3</p>
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(False)
+                # Queue should be allowed to expand fully
+                try:
+                    self.queue_panel.lock_content_height(False)
+                    self.queue_panel.set_content_stretch(True)
+                    if getattr(self, 'table', None) is not None:
+                        from PySide6.QtWidgets import QSizePolicy
+                        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                except Exception:
+                    pass
                 print("[App] Applied Queue Only layout")
                 
             elif preset == "eq_only":
@@ -3755,6 +3806,12 @@ Licensed under AGPL v3</p>
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(True)
                 self.search_panel.setVisible(False)
+                # Keep EQ sized-to-content to avoid overly tall sliders
+                try:
+                    self.eq_panel.lock_content_height(True)
+                    self.eq_panel.set_content_stretch(False)
+                except Exception:
+                    pass
                 print("[App] Applied EQ Only layout")
                 
             elif preset == "search_only":
@@ -3765,6 +3822,15 @@ Licensed under AGPL v3</p>
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(True)
+                # Force search panel to fill remaining space
+                try:
+                    self.search_panel.lock_content_height(False)
+                    self.search_panel.set_content_stretch(True)
+                    if getattr(self, 'search_bar', None) is not None:
+                        from PySide6.QtWidgets import QSizePolicy
+                        self.search_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                except Exception:
+                    pass
                 print("[App] Applied Search Only layout")
                 
             elif preset == "full_view":
@@ -3775,16 +3841,185 @@ Licensed under AGPL v3</p>
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(True)
                 self.search_panel.setVisible(True)
+                try:
+                    # Default: panels size to content unless last-visible stretch logic changes it
+                    self.queue_panel.lock_content_height(True)
+                    self.queue_panel.set_content_stretch(False)
+                    self.eq_panel.lock_content_height(True)
+                    self.eq_panel.set_content_stretch(False)
+                    self.search_panel.lock_content_height(True)
+                    self.search_panel.set_content_stretch(False)
+                except Exception:
+                    pass
                 print("[App] Applied Full View layout")
             
             # Update stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
+            # Snap window height to visible content so there's no extra padding
+            QTimer.singleShot(0, self._resize_to_fit_visible_panels)
             
             # Save the panel states
             self._save_panel_states()
             
         except Exception as e:
             print(f"[App] Failed to apply layout preset: {e}")
+
+    def _resize_to_fit_visible_panels(self):
+        """Resize the fixed-height window to fit the toolbar + visible panels + status bar.
+        
+        Keeps the non-resizable behavior but avoids large empty space when fewer panels are visible
+        (e.g., EQ Only or Search Only). Width remains unchanged.
+        """
+        try:
+            # Activate layouts to get accurate size hints
+            try:
+                if self.centralWidget() and self.centralWidget().layout():
+                    self.centralWidget().layout().activate()
+            except Exception:
+                pass
+
+            central = self.centralWidget()
+            ch = central.sizeHint().height() if central is not None else 0
+            mbh = self.menuBar().height() if self.menuBar() else 0
+            tb = getattr(self, 'toolbar', None)
+            tbh = tb.height() if tb is not None else 0
+            sb = self.statusBar() if hasattr(self, 'statusBar') else None
+            sbh = sb.height() if sb is not None else 0
+
+            # Base gaps: minor padding between sections
+            extra = 8
+            new_h = mbh + tbh + ch + sbh + extra
+
+            # Clamp to sensible range
+            new_h = max(480, min(new_h, 1000))
+
+            # Preserve current width (we keep window non-resizable)
+            new_w = self.width()
+            self.setFixedSize(new_w, new_h)
+        except Exception as e:
+            print(f"[App] Failed to resize-to-fit: {e}")
+
+    # =========================
+    # Rack Mode (experimental)
+    # =========================
+    def _build_rack_ui(self):
+        """Prepare the Rack Mode container and pages. Not shown until enabled."""
+        if getattr(self, "_rack_container", None) is not None:
+            return
+        self._rack_container = QWidget()
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
+        root = QHBoxLayout()
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._rack_view = RackView()
+        self._rack_output = OutputCanvas()
+
+        # Build basic pages; we reparent existing widgets on enter
+        self._rack_pages = {
+            "queue": QWidget(),
+            "eq": QWidget(),
+            "search": QWidget(),
+        }
+        for pid, w in self._rack_pages.items():
+            lay = QVBoxLayout()
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            w.setLayout(lay)
+            title = {"queue": "Queue", "eq": "EQ", "search": "Search"}.get(pid, pid.title())
+            self._rack_output.add_page(pid, w, title)
+
+        # Left modules list
+        self._rack_view.add_module("queue", "Queue")
+        self._rack_view.add_module("eq", "EQ")
+        self._rack_view.add_module("search", "Search")
+        self._rack_view.module_selected.connect(self._on_rack_module_selected)
+
+        root.addWidget(self._rack_view)
+        root.addWidget(self._rack_output, 1)
+        self._rack_container.setLayout(root)
+
+    def _on_rack_module_selected(self, page_id: str):
+        try:
+            self._rack_output.show_page(page_id)
+        except Exception:
+            pass
+
+    def _set_rack_mode(self, enabled: bool):
+        """Toggle Rack Mode and swap central widget accordingly."""
+        if enabled == getattr(self, "_rack_enabled", False):
+            return
+        self._rack_enabled = enabled
+        if enabled:
+            self._enter_rack_mode()
+        else:
+            self._exit_rack_mode()
+        # keep menu state in sync
+        if hasattr(self, "_act_rack_mode") and self._act_rack_mode.isChecked() != enabled:
+            self._act_rack_mode.setChecked(enabled)
+
+    def _enter_rack_mode(self):
+        """Reparent key widgets into Rack pages and show rack container."""
+        try:
+            # Prepare pages
+            queue_page = self._rack_pages.get("queue")
+            search_page = self._rack_pages.get("search")
+
+            # Reparent queue table
+            if getattr(self, "table", None) is not None and queue_page is not None:
+                # Remember original parent to restore later
+                self._orig_table_parent = self.table.parent()
+                self.table.setParent(queue_page)
+                queue_page.layout().addWidget(self.table)
+
+            # Reparent search bar
+            if getattr(self, "search_bar", None) is not None and search_page is not None:
+                self._orig_search_parent = self.search_bar.parent()
+                self.search_bar.setParent(search_page)
+                search_page.layout().addWidget(self.search_bar)
+
+            # For EQ page, show a simple placeholder for now
+            from PySide6.QtWidgets import QLabel
+            eq_page = self._rack_pages.get("eq")
+            if eq_page is not None and eq_page.layout().count() == 0:
+                ph = QLabel("EQ page in Rack Mode (experimental) — coming next")
+                ph.setStyleSheet("color: #9ad04b; padding: 12px;")
+                eq_page.layout().addWidget(ph)
+
+            # Swap central widget
+            self._prev_central = self.centralWidget()
+            self.setCentralWidget(self._rack_container)
+            # Default to Queue page
+            self._rack_view.select("queue")
+        except Exception as e:
+            print(f"[SidecarEQ] Enter Rack Mode failed: {e}")
+
+    def _exit_rack_mode(self):
+        """Restore classic central layout and reparent widgets back."""
+        try:
+            # Restore queue table
+            if getattr(self, "table", None) is not None and hasattr(self, "_orig_table_parent") and self._orig_table_parent is not None:
+                self.table.setParent(self._orig_table_parent)
+                # Put table back into queue panel content
+                if hasattr(self, "queue_panel"):
+                    self.queue_panel.set_content(self.table)
+                    self.queue_panel.lock_content_height(True)
+                self._orig_table_parent = None
+
+            # Restore search bar
+            if getattr(self, "search_bar", None) is not None and hasattr(self, "_orig_search_parent") and self._orig_search_parent is not None:
+                self.search_bar.setParent(self._orig_search_parent)
+                if hasattr(self, "search_panel"):
+                    self.search_panel.set_content(self.search_bar)
+                    self.search_panel.lock_content_height(True)
+                self._orig_search_parent = None
+
+            # Swap back to classic central widget
+            if getattr(self, "_prev_central", None) is not None:
+                self.setCentralWidget(self._prev_central)
+                self._prev_central = None
+        except Exception as e:
+            print(f"[SidecarEQ] Exit Rack Mode failed: {e}")
     
     def _on_layout_preset_changed(self, index: int):
         """Handle layout preset dropdown selection.
@@ -3805,6 +4040,7 @@ Licensed under AGPL v3</p>
         self._update_panel_stretch_factors()
         
         # Refresh panel geometry
+        QTimer.singleShot(0, self._resize_to_fit_visible_panels)
         QTimer.singleShot(300, lambda: self._sync_queue_panel_height())
     
     def _save_queue_state(self):
@@ -3899,7 +4135,12 @@ def main():
     _vf = VolFilter(_vol_key_filter, app)
     app.installEventFilter(_vf)
     # Keep a Python-side ref so it isn't GC'd while the app runs
-    setattr(app, "_vol_filter", _vf)
+    # Store reference on the app instance to avoid GC in a type-safe way
+    # Use object.__setattr__ to avoid type checker complaints and keep styling tools happy
+    try:
+        object.__setattr__(app, "_vol_filter", _vf)  # type: ignore[attr-defined]
+    except Exception:
+        app.__dict__["_vol_filter"] = _vf  # type: ignore[attr-defined]
     w.show()
     sys.exit(app.exec())
 

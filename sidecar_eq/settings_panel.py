@@ -57,6 +57,11 @@ class SettingsDialog(QDialog):
         self.cb_remember_layout.setChecked(bool(prefs.get("remember_layout", True)))
         form.addRow(self.cb_remember_layout)
 
+        # Rack Mode startup (experimental)
+        self.cb_rack_startup = QCheckBox("Start in Rack Mode (experimental)")
+        self.cb_rack_startup.setChecked(bool(prefs.get("rack_mode_startup", False)))
+        form.addRow(self.cb_rack_startup)
+
         self.cmb_default_layout = QComboBox()
         self._layout_keys = ["full_view", "queue_only", "eq_only", "search_only"]
         self.cmb_default_layout.addItems(["Full View", "Queue Only", "EQ Only", "Search Only"])
@@ -87,6 +92,7 @@ class SettingsDialog(QDialog):
             "queue_empty_stripes": self.cb_empty_stripes.isChecked(),
             "remember_layout": self.cb_remember_layout.isChecked(),
             "default_layout_preset": self._layout_keys[self.cmb_default_layout.currentIndex()],
+            "rack_mode_startup": self.cb_rack_startup.isChecked(),
         }
         store.set_record("ui:settings", prefs)
 
@@ -105,6 +111,13 @@ class SettingsDialog(QDialog):
         try:
             if not self.cb_remember_layout.isChecked():
                 self.main._apply_layout_preset(self._layout_keys[self.cmb_default_layout.currentIndex()])
+        except Exception:
+            pass
+
+        # Apply Rack Mode immediately if toggled
+        try:
+            if hasattr(self.main, "_set_rack_mode"):
+                self.main._set_rack_mode(self.cb_rack_startup.isChecked())
         except Exception:
             pass
 

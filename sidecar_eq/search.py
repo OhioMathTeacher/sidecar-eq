@@ -472,7 +472,8 @@ class SearchBar(QWidget):
     
     def _on_category_item_double_clicked(self, item):
         """Handle double-click on category item - add to queue."""
-        path = item.data(Qt.UserRole)
+        # Use correct enum for retrieving stored file path
+        path = item.data(Qt.ItemDataRole.UserRole)
         if path:
             self.result_selected.emit(path, True)  # True = play immediately
             
@@ -634,7 +635,9 @@ class SearchBar(QWidget):
             # Note: results_list doesn't exist in category-based search
             # self.results_list.hide()
             return
-            
+        # Always perform a search immediately on Enter (bypass debounce)
+        self._perform_search()
+
         # If results are showing, play the first result from any visible category
         if self.results_scroll_area.isVisible():
             # Find first non-empty category and play its first item
@@ -642,7 +645,7 @@ class SearchBar(QWidget):
                 list_widget = category_widget.findChild(QListWidget)
                 if list_widget and list_widget.count() > 0:
                     first_item = list_widget.item(0)
-                    path = first_item.data(Qt.UserRole)
+                    path = first_item.data(Qt.ItemDataRole.UserRole)
                     if path:
                         self.result_selected.emit(path, True)  # Add and play immediately
                         # Keep search results visible so user can browse related tracks
