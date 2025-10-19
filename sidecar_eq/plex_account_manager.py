@@ -41,6 +41,7 @@ class PlexDiscoveryThread(QThread):
                     'host': entry.get('host', ''),
                     'port': entry.get('port', '32400'),
                     'uri': entry.get('uri', ''),
+                    'token': entry.get('accessToken') or entry.get('token'),
                 })
                 
             self.servers_found.emit(servers)
@@ -124,6 +125,10 @@ class PlexServerManagerDialog(QDialog):
         self.server_port_input.setMaximumWidth(100)
         manual_form.addRow("Port:", self.server_port_input)
         
+        self.server_token_input = QLineEdit()
+        self.server_token_input.setPlaceholderText("Optional access token for auto user discovery")
+        manual_form.addRow("Token:", self.server_token_input)
+
         manual_button_layout = QHBoxLayout()
         self.connect_btn = QPushButton("Connect to Server")
         self.connect_btn.clicked.connect(self._connect_manual)
@@ -162,7 +167,8 @@ class PlexServerManagerDialog(QDialog):
             users = server.get('users', [])
             user_count = len(users)
             
-            item_text = f"� {server_name} ({host}:{port}) - {user_count} user(s)"
+            extra = " • token saved" if server.get('token') else ''
+            item_text = f"🎬 {server_name} ({host}:{port}) - {user_count} user(s){extra}"
             
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, server)
@@ -214,7 +220,8 @@ class PlexServerManagerDialog(QDialog):
                 self._connect_to_server(
                     selected_server['host'],
                     selected_server['port'],
-                    selected_server['name']
+                    selected_server['name'],
+                    selected_server.get('token')
                 )
                 
     def _connect_manual(self):
@@ -237,35 +244,49 @@ class PlexServerManagerDialog(QDialog):
                 "Please enter the server IP address."
             )
             return
-            
-        self._connect_to_server(host, port)
         
-    def _connect_to_server(self, host, port, server_name=None):
+        token = self.server_token_input.text().strip() or None
+        self._connect_to_server(host, port, token=token)
+        
+    def _connect_to_server(self, host, port, server_name=None, token=None):
         """Connect to Plex server and configure Home Users."""
         try:
-            # Connect to server (no authentication needed for discovery)
             baseurl = f"http://{host}:{port}"
-            
-            # Try connecting without token first (to get server info)
+
+            discovered_name = server_name or "Unknown Server"
+            resolved_token = token
+
             try:
-                server = PlexServer(baseurl, timeout=5)
-                discovered_name = server.friendlyName
-            except:
-                # If that fails, we'll need token - show user selection dialog
-                discovered_name = server_name or "Unknown Server"
-                
-            # Open user configuration dialog
-            dialog = PlexHomeUserDialog(host, port, discovered_name, self.store, self)
+                server = PlexServer(
+                    baseurl,
+                    token=token,
+                    timeout=5,
+                ) if token else PlexServer(baseurl, timeout=5)
+                discovered_name = getattr(server, "friendlyName", discovered_name)
+                if not resolved_token:
+                    resolved_token = getattr(server, "_token", None)
+            except Exception as exc:
+                print(f"Plex quick connect failed for {host}:{port}: {exc}")
+
+            dialog = PlexHomeUserDialog(
+                host,
+                port,
+                discovered_name,
+                self.store,
+                self,
+                admin_token=resolved_token,
+            )
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 # Reload server list
                 self._load_servers()
                 
                 # Clear inputs
                 self.server_ip_input.clear()
+                self.server_token_input.clear()
                 
                 QMessageBox.information(
                     self,
-                    "Server Added! �",
+                    "Server Added! 🎉",
                     f"Successfully connected to {discovered_name}!\n\n"
                     "This server will now appear in your source dropdown."
                 )
@@ -294,7 +315,8 @@ class PlexServerManagerDialog(QDialog):
             server['name'],
             self.store,
             self,
-            existing_server=server
+            existing_server=server,
+            admin_token=server.get('token')
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._load_servers()
@@ -396,19 +418,30 @@ class PlexServerDiscoveryDialog(QDialog):
 class PlexHomeUserDialog(QDialog):
     """Dialog for configuring Plex Home Users (managed accounts) for a server."""
     
-    def __init__(self, host: str, port: str, server_name: str, store, parent=None, existing_server=None):
+    def __init__(
+        self,
+        host: str,
+        port: str,
+        server_name: str,
+        store,
+        parent=None,
+        existing_server=None,
+        admin_token: str | None = None,
+    ):
         super().__init__(parent)
         self.host = host
         self.port = port
         self.server_name = server_name
         self.store = store
-        self.existing_server = existing_server
+        self.existing_server = existing_server or {}
+        self.admin_token = admin_token or self.existing_server.get("token")
         
         self.setWindowTitle(f"Configure Users for {server_name}")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(400)
+        self.setMinimumWidth(620)
+        self.setMinimumHeight(420)
         
         self.user_widgets = []
+        self._discovered_users = []
         
         self._init_ui()
         self._load_home_users()
@@ -431,6 +464,11 @@ class PlexHomeUserDialog(QDialog):
         info.setStyleSheet("color: #666; padding: 10px; font-size: 11px;")
         layout.addWidget(info)
         
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #666; padding: 0 10px; font-size: 11px;")
+        layout.addWidget(self.status_label)
+        
         # User list area
         self.user_group = QGroupBox("Available Home Users")
         self.user_layout = QVBoxLayout(self.user_group)
@@ -445,32 +483,148 @@ class PlexHomeUserDialog(QDialog):
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
         
+    def _reset_user_layout(self):
+        """Remove all widgets from the user layout."""
+        while self.user_layout.count():
+            item = self.user_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+    
     def _load_home_users(self):
         """Load Home Users from the Plex server."""
-        # For now, create manual user configuration UI
-        # In a future enhancement, we could auto-detect users with proper authentication
-        self._create_manual_user_ui()
+        self._reset_user_layout()
+        self.user_widgets = []
+        existing_users = self.existing_server.get("users", [])
+
+        if not PLEX_AVAILABLE:
+            self.status_label.setText(
+                "PlexAPI is not installed. Install it to auto-detect Home Users, or add users manually."
+            )
+            self._create_manual_user_ui(existing_users)
+            return
+
+        discovered_users, error_message = self._fetch_home_users()
+        if discovered_users:
+            self._discovered_users = discovered_users
+            self.status_label.setText(
+                f"Found {len(discovered_users)} user(s) on {self.server_name}. Enable the profiles you want SidecarEQ to use."
+            )
+            self._populate_discovered_users(discovered_users, existing_users)
+            return
+
+        # Auto detection failed – fall back to manual configuration.
+        fallback_message = error_message or "Auto-discovery unavailable. Enter usernames manually."
+        self.status_label.setText(fallback_message)
+        self._create_manual_user_ui(existing_users)
+    
+    def _fetch_home_users(self):
+        """Attempt to discover Home Users using the provided admin token."""
+        if not self.admin_token:
+            return None, "No Plex access token available. Add your server token to enable auto-discovery."
+
+        baseurl = f"http://{self.host}:{self.port}"
+        try:
+            server = PlexServer(baseurl, token=self.admin_token, timeout=10)
+            account = server.myPlexAccount()
+            system_accounts = {acc.id: acc for acc in server.systemAccounts()}
+            plex_users = {user.id: user for user in account.users()}
+
+            discovered = []
+            for account_id, system_account in system_accounts.items():
+                user_meta = plex_users.get(account_id)
+                if user_meta is None:
+                    # Skip friend shares that aren't part of Plex Home
+                    continue
+                requires_pin = bool(getattr(user_meta, "protected", False))
+                display_name = user_meta.title or system_account.name
+                discovered.append({
+                    "id": account_id,
+                    "username": system_account.name,
+                    "display_name": display_name,
+                    "thumb": user_meta.thumb or system_account.thumb,
+                    "requires_pin": requires_pin,
+                })
+
+            if not discovered:
+                return None, "No Plex Home Users were returned for this server."
+            return discovered, None
+
+        except Exception as exc:
+            print(f"Failed to auto-discover Plex users for {self.server_name}: {exc}")
+            return None, f"Automatic discovery failed: {exc}. Enter users manually."
+
+    def _populate_discovered_users(self, users: list, existing_users: list):
+        """Render UI rows for discovered users."""
+        existing_lookup = {u.get("username"): u for u in existing_users}
+
+        for user_info in users:
+            existing = existing_lookup.get(user_info["username"], {})
+            self._add_discovered_user_row(user_info, existing)
+
+        add_custom_btn = QPushButton("+ Add Custom User")
+        add_custom_btn.clicked.connect(lambda: self._add_user_row({}))
+        self.user_layout.addWidget(add_custom_btn)
             
-    def _create_manual_user_ui(self):
+    def _create_manual_user_ui(self, existing_users: list):
         """Create UI for manual user configuration."""
-        # Load existing users if editing
-        existing_users = []
-        if self.existing_server:
-            existing_users = self.existing_server.get('users', [])
-            
-        # If no existing users, add some common defaults
-        if not existing_users:
-            existing_users = [
-                {'username': '', 'pin': '', 'enabled': False}
-            ]
-            
-        for user_data in existing_users:
+        users = existing_users or [{'username': '', 'pin': '', 'enabled': False}]
+
+        for user_data in users:
             self._add_user_row(user_data)
-            
-        # Add button for more users
+
         add_user_btn = QPushButton("+ Add Another User")
         add_user_btn.clicked.connect(lambda: self._add_user_row({}))
         self.user_layout.addWidget(add_user_btn)
+
+    def _add_discovered_user_row(self, user_info: dict, existing: dict):
+        """Add a read-only row for an auto-discovered Plex Home user."""
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(12)
+
+        enabled_cb = QCheckBox()
+        enabled_cb.setChecked(existing.get('enabled', True))
+        row_layout.addWidget(enabled_cb)
+
+        name_label = QLabel(user_info.get('display_name') or user_info.get('username', 'Unknown'))
+        name_label.setMinimumWidth(180)
+        name_label.setStyleSheet("font-weight: bold;")
+        row_layout.addWidget(name_label)
+
+        pin_input = QLineEdit()
+        pin_input.setEchoMode(QLineEdit.EchoMode.Password)
+        pin_input.setMaxLength(4)
+        pin_input.setMaximumWidth(90)
+        pin_input.setText(existing.get('pin', ''))
+        requires_pin = bool(user_info.get('requires_pin'))
+        placeholder = "PIN required" if requires_pin else "PIN (optional)"
+        pin_input.setPlaceholderText(placeholder)
+        row_layout.addWidget(pin_input)
+
+        if requires_pin:
+            hint_label = QLabel("Requires PIN")
+            hint_label.setStyleSheet("color: #a94442;")
+        else:
+            hint_label = QLabel("No PIN needed")
+            hint_label.setStyleSheet("color: #2d7a46;")
+        row_layout.addWidget(hint_label)
+
+        row_layout.addStretch()
+
+        self.user_layout.addWidget(row_widget)
+        self.user_widgets.append({
+            'widget': row_widget,
+            'enabled': enabled_cb,
+            'username': user_info.get('username'),
+            'display_name': user_info.get('display_name'),
+            'pin': pin_input,
+            'requires_pin': requires_pin,
+            'user_id': user_info.get('id'),
+            'thumb': user_info.get('thumb'),
+            'source': 'auto',
+        })
         
     def _add_user_row(self, user_data):
         """Add a user configuration row."""
@@ -499,6 +653,7 @@ class PlexHomeUserDialog(QDialog):
         pin_input.setPlaceholderText("4-digit PIN")
         pin_input.setMaxLength(4)
         pin_input.setMaximumWidth(80)
+        pin_input.setEchoMode(QLineEdit.EchoMode.Password)
         row_layout.addWidget(pin_input)
         
         # Remove button
@@ -512,7 +667,12 @@ class PlexHomeUserDialog(QDialog):
             'widget': row_widget,
             'enabled': enabled_cb,
             'username': username_input,
-            'pin': pin_input
+            'pin': pin_input,
+            'requires_pin': bool(user_data.get('requires_pin', False)),
+            'display_name': user_data.get('display_name'),
+            'user_id': user_data.get('id'),
+            'thumb': user_data.get('thumb'),
+            'source': 'manual',
         })
         
     def _remove_user_row(self, widget):
@@ -522,20 +682,66 @@ class PlexHomeUserDialog(QDialog):
         
     def _save_configuration(self):
         """Save the user configuration."""
-        # Collect enabled users
         users = []
+        missing_pins = []
+        missing_usernames = False
+
         for user_widget in self.user_widgets:
-            if user_widget['enabled'].isChecked():
-                username = user_widget['username'].text().strip()
-                pin = user_widget['pin'].text().strip()
-                
-                if username:  # Only save if username is provided
-                    users.append({
-                        'username': username,
-                        'pin': pin,
-                        'enabled': True
-                    })
-                    
+            if not user_widget['enabled'].isChecked():
+                continue
+
+            username_field = user_widget['username']
+            if isinstance(username_field, QLineEdit):
+                username = username_field.text().strip()
+            else:
+                username = (username_field or '').strip()
+
+            pin_field = user_widget.get('pin')
+            pin = pin_field.text().strip() if isinstance(pin_field, QLineEdit) else str(pin_field or '').strip()
+
+            if not username:
+                missing_usernames = True
+                continue
+
+            if user_widget.get('requires_pin') and not pin:
+                missing_pins.append(username)
+                continue
+
+            user_entry = {
+                'username': username,
+                'pin': pin,
+                'enabled': True,
+            }
+
+            if user_widget.get('display_name'):
+                user_entry['display_name'] = user_widget['display_name']
+            if user_widget.get('user_id'):
+                user_entry['id'] = user_widget['user_id']
+            if user_widget.get('thumb'):
+                user_entry['thumb'] = user_widget['thumb']
+            if 'requires_pin' in user_widget:
+                user_entry['requires_pin'] = bool(user_widget['requires_pin'])
+
+            users.append(user_entry)
+
+        if missing_usernames and not users:
+            QMessageBox.warning(
+                self,
+                "Missing Username",
+                "Please enter a username for each enabled entry."
+            )
+            return
+
+        if missing_pins:
+            QMessageBox.warning(
+                self,
+                "PIN Required",
+                "Enter the 4-digit PIN for: {}".format(
+                    ", ".join(missing_pins)
+                )
+            )
+            return
+
         if not users:
             QMessageBox.warning(
                 self,
@@ -555,7 +761,8 @@ class PlexHomeUserDialog(QDialog):
             'name': self.server_name,
             'host': self.host,
             'port': self.port,
-            'users': users
+            'users': users,
+            'token': self.admin_token,
         }
         servers.append(server_config)
         
@@ -583,16 +790,16 @@ class PlexAccountSelectorDialog(QDialog):
         layout = QVBoxLayout(self)
         
         # Header
-        header = QLabel(f"Select which user to connect as:")
+        header = QLabel("Select which user to connect as:")
         header.setStyleSheet("font-weight: bold; padding: 10px;")
         layout.addWidget(header)
         
         # User selector
         self.user_combo = QComboBox()
         for user in self.users:
-            username = user.get('username', 'Unknown')
-            has_pin = '🔒' if user.get('pin') else '👤'
-            self.user_combo.addItem(f"{has_pin} {username}", user)
+            display_name = user.get('display_name') or user.get('username', 'Unknown')
+            has_pin = '🔒' if user.get('requires_pin') or user.get('pin') else '👤'
+            self.user_combo.addItem(f"{has_pin} {display_name}", user)
         layout.addWidget(self.user_combo)
         
         # PIN input (shown only if user has PIN)
@@ -632,23 +839,29 @@ class PlexAccountSelectorDialog(QDialog):
     def _update_pin_visibility(self):
         """Show/hide PIN input based on selected user."""
         user = self.get_selected_user()
-        if user and user.get('pin'):
+        if user and (user.get('requires_pin') or user.get('pin')):
             self.pin_widget.setVisible(True)
+            stored_pin = user.get('pin') or ''
+            if stored_pin and not self.pin_input.text():
+                self.pin_input.setText(stored_pin)
         else:
             self.pin_widget.setVisible(False)
+            self.pin_input.clear()
             
     def _validate_and_accept(self):
         """Validate PIN if needed before accepting."""
         user = self.get_selected_user()
-        if user and user.get('pin'):
+        if user and (user.get('requires_pin') or user.get('pin')):
             entered_pin = self.pin_input.text().strip()
-            if entered_pin != user['pin']:
+            if not entered_pin and user.get('requires_pin'):
                 QMessageBox.warning(
                     self,
-                    "Incorrect PIN",
-                    "The PIN you entered is incorrect."
+                    "PIN Required",
+                    "This Plex user requires a PIN."
                 )
                 return
+            if entered_pin:
+                user['pin'] = entered_pin
         self.accept()
         
     def get_selected_user(self):

@@ -37,6 +37,24 @@ class QueueTableView(QTableView):
         """
         super().__init__(parent)
 
+    def sizeHint(self):
+        """Return a height based on a fixed number of visible rows."""
+        hint = super().sizeHint()
+        try:
+            header_height = self.horizontalHeader().height()
+        except Exception:
+            header_height = 24
+        try:
+            row_height = self.verticalHeader().defaultSectionSize()
+        except Exception:
+            row_height = 24
+        model = self.model()
+        row_count = model.rowCount() if model is not None else 0
+        visible_rows = max(1, min(row_count, 6))
+        frame = self.frameWidth() * 2
+        height = header_height + (row_height * visible_rows) + frame
+        return QSize(hint.width(), height)
+
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events, specifically the Delete key.
 

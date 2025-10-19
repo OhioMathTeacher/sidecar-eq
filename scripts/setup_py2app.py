@@ -9,20 +9,25 @@ Options:
     py2app -A       Build alias mode (faster for development)
 """
 
-from setuptools import setup
-from pathlib import Path
 import sys
+from pathlib import Path
+
+from setuptools import setup
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 APP = ['sidecar_eq/app.py']
 APP_NAME = 'Sidecar EQ'
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 BUNDLE_ID = 'com.ohiomathteacher.sidecar-eq'
 
+ICON_DIR = Path('icons')
 DATA_FILES = [
-    ('icons', list(Path('icons').glob('*.svg')) + list(Path('icons').glob('*.png'))),
+    (
+        'icons',
+        [str(path) for path in ICON_DIR.glob('*.svg')] + [str(path) for path in ICON_DIR.glob('*.png')],
+    ),
 ]
 
 OPTIONS = {

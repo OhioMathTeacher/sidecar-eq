@@ -1,6 +1,9 @@
-import json, os, sys
-from pathlib import Path
+import json
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
 
 def _config_dir() -> Path:
     if sys.platform == "darwin":
@@ -31,6 +34,11 @@ def get_record(path: str):
 def set_record(path: str, data: dict) -> None:
     _db[os.path.abspath(path)] = data
     save_db()
+
+
+def put_record(path: str, data: dict) -> None:
+    """Backward-compatible alias for set_record."""
+    set_record(path, data)
 
 def increment_play_count(path: str) -> None:
     ap = os.path.abspath(path)

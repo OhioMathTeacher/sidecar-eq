@@ -341,6 +341,21 @@ class MainWindow(QMainWindow):
             # - Search bar (bottom, collapsible panel)
             # Simple vertical layout with collapsible panels
             from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QSizePolicy
+
+            # Keep queue panel height synced with content changes
+            try:
+                self._sync_queue_panel_height()
+                if self.model:
+                    for signal in (
+                        self.model.modelReset,
+                        self.model.layoutChanged,
+                        self.model.rowsInserted,
+                        self.model.rowsRemoved,
+                        self.model.dataChanged,
+                    ):
+                        signal.connect(self._sync_queue_panel_height)
+            except Exception:
+                pass
             central_widget = QWidget()
             central_layout = QVBoxLayout()
             central_layout.setContentsMargins(0, 0, 0, 0)
@@ -349,6 +364,7 @@ class MainWindow(QMainWindow):
             # Panel 1: Song Queue & Metadata (collapsible, accordion style)
             self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
             self.queue_panel.set_content(self.table)
+            self.queue_panel.lock_content_height(True)
             self.table.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             self.table.setMinimumHeight(100)
             central_layout.addWidget(self.queue_panel, stretch=0)  # Size to content
@@ -362,6 +378,7 @@ class MainWindow(QMainWindow):
             if self.search_bar:
                 self.search_bar.setMinimumHeight(250)
                 self.search_panel.set_content(self.search_bar)
+                self.search_panel.lock_content_height(True)
             central_layout.addWidget(self.search_panel, stretch=0)  # Size to content
             
             # Add stretchable spacer at the bottom to push all panels to top
@@ -375,6 +392,7 @@ class MainWindow(QMainWindow):
             
             # Load saved queue state
             self._load_queue_state()
+            self._sync_queue_panel_height()
             
             # Auto-refresh metadata for existing queue items (background operation)
             if self.model and hasattr(self.model, '_rows') and len(self.model._rows) > 0:
@@ -1238,6 +1256,7 @@ class MainWindow(QMainWindow):
         # Set container as content of the collapsible EQ panel
         if hasattr(self, 'eq_panel'):
             self.eq_panel.set_content(container)
+            self.eq_panel.lock_content_height(True)
 
         # Apply initial audio defaults (80%) for volume and EQ on first run
         try:
@@ -1273,6 +1292,32 @@ class MainWindow(QMainWindow):
     def _on_volume_changed(self, val):
         """Legacy method - now just for compatibility."""
         pass  # Real-time handled by _on_volume_changed_realtime
+
+    def _sync_queue_panel_height(self, *_, **__):
+        """Keep collapsible panels locked to their content height."""
+
+        def _apply():
+            try:
+                if getattr(self, "table", None):
+                    self.table.updateGeometry()
+                if getattr(self, "queue_panel", None):
+                    self.queue_panel.refresh_geometry()
+                if getattr(self, "eq_panel", None):
+                    self.eq_panel.refresh_geometry()
+                if getattr(self, "search_panel", None):
+                    self.search_panel.refresh_geometry()
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _apply)
+
+    def resizeEvent(self, event):
+        response = super().resizeEvent(event)
+        try:
+            self._sync_queue_panel_height()
+        except Exception:
+            pass
+        return response
 
     def _build_menubar(self):
         """Create a macOS-native menubar with File/Playback/View/Help."""
@@ -2203,6 +2248,7 @@ Licensed under AGPL v3</p>
             
         if user:
             username = user.get('username', 'Unknown')
+            self._update_plex_server_users(server_name, users)
             self._open_plex_browser_as_user(server, username)
     
     def _open_plex_browser_as_user(self, server: dict, username: str):
@@ -2258,6 +2304,22 @@ Licensed under AGPL v3</p>
         
         # Update Plex menu to reflect changes
         self._update_plex_menu()
+
+    def _update_plex_server_users(self, server_name: str, users: list) -> None:
+        """Persist updated Plex user metadata back to the store."""
+        try:
+            servers = store.get_record("plex_servers") or []
+            changed = False
+            for server in servers:
+                if server.get('name') == server_name:
+                    if server.get('users') != users:
+                        server['users'] = users
+                        changed = True
+                    break
+            if changed:
+                store.put_record("plex_servers", servers)
+        except Exception as exc:
+            print(f"[App] Failed to persist Plex user changes: {exc}")
     
     def _update_plex_menu(self):
         """Update the Browse Plex submenu with configured servers and users."""
@@ -3557,43 +3619,44 @@ Licensed under AGPL v3</p>
         self._save_panel_states()
         
         # Resize window to fit content (accordion style)
-        # Use QTimer to defer resize until after panel animation completes
-        QTimer.singleShot(10, lambda: self._resize_to_content())
+        # Delay slightly so the collapse animation can finish before measuring
+        delay_ms = 300
+        QTimer.singleShot(delay_ms, self._resize_to_content)
+        QTimer.singleShot(delay_ms, lambda: self._sync_queue_panel_height())
     
     def _resize_to_content(self):
         """Resize the main window to fit its current content (accordion behavior)."""
         try:
-            # Calculate the height needed for visible content
+            def _widget_height(widget):
+                if widget is None:
+                    return 0
+                height = widget.height()
+                if height <= 0:
+                    hint = widget.sizeHint()
+                    height = hint.height() if hint.isValid() else 0
+                return max(0, height)
+
             total_height = 0
-            
-            # Add toolbar height
-            if self.toolbar:
-                total_height += self.toolbar.height()
-            
-            # Add menubar height (macOS)
-            if self.menuBar():
-                total_height += self.menuBar().height()
-            
-            # Add each panel's height
-            if hasattr(self, 'queue_panel'):
-                total_height += self.queue_panel.sizeHint().height()
-            if hasattr(self, 'eq_panel'):
-                total_height += self.eq_panel.sizeHint().height()
-            if hasattr(self, 'search_panel'):
-                total_height += self.search_panel.sizeHint().height()
-            
-            # Add status bar height
-            if self.statusBar():
-                total_height += self.statusBar().height()
-            
-            # Add some padding for borders/margins (conservative estimate)
-            total_height += 10
-            
-            # Keep current width, update height
+            total_height += _widget_height(self.menuBar())
+            total_height += _widget_height(getattr(self, "toolbar", None))
+            total_height += _widget_height(getattr(self, "queue_panel", None))
+            total_height += _widget_height(getattr(self, "eq_panel", None))
+            total_height += _widget_height(getattr(self, "search_panel", None))
+            total_height += _widget_height(self.statusBar())
+            total_height += 16  # padding for borders/margins
+
+            central = self.centralWidget()
+            if central is not None:
+                central.adjustSize()
+
+            screen = self.screen()
+            max_height = screen.availableGeometry().height() if screen else total_height
+            new_height = min(total_height, max_height)
+            new_height = max(new_height, 200)
+
             current_width = self.width()
-            self.resize(current_width, total_height)
-            
-            print(f"[App] Window resized (accordion): {current_width}x{total_height}")
+            self.resize(current_width, int(new_height))
+            print(f"[App] Window resized (accordion): {current_width}x{int(new_height)}")
         except Exception as e:
             print(f"[App] Failed to resize window: {e}")
             import traceback

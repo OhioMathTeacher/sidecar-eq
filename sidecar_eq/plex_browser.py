@@ -1,21 +1,13 @@
 """Plex music browser dialog for SidecarEQ."""
 
-import os
-from pathlib import Path
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QLabel, QLineEdit, QMessageBox, QProgressDialog
 )
-from PySide6.QtCore import Qt, Signal
 
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-try:
-    from plexapi.myplex import MyPlexAccount
+    from plexapi.server import PlexServer
     PLEX_AVAILABLE = True
 except ImportError:
     PLEX_AVAILABLE = False
@@ -23,16 +15,21 @@ except ImportError:
 
 class PlexBrowserDialog(QDialog):
     """Dialog for browsing and selecting tracks from Plex server."""
-    
-    def __init__(self, parent=None):
+
+    def __init__(self, parent=None, server_config=None, username: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Browse Plex: Downstairs")
+
+        self.server_config = server_config or {}
+        self.username = username or ""
+        self.server_display_name = self.server_config.get('name', 'Plex')
+
+        self.setWindowTitle(f"Browse Plex: {self.server_display_name}")
         self.resize(800, 600)
-        
+
         self.plex = None
         self.music_section = None
         self.selected_tracks = []
-        
+
         self._setup_ui()
         self._connect_to_plex()
     
@@ -50,6 +47,7 @@ class PlexBrowserDialog(QDialog):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search artists, albums, tracks...")
         self.search_box.textChanged.connect(self._on_search)
+        self.search_box.setEnabled(False)
         search_layout.addWidget(self.search_box)
         layout.addLayout(search_layout)
         
@@ -59,6 +57,7 @@ class PlexBrowserDialog(QDialog):
         self.tree.setColumnWidth(0, 400)
         self.tree.setColumnWidth(1, 100)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.setEnabled(False)
         layout.addWidget(self.tree)
         
         # Instructions
@@ -83,45 +82,75 @@ class PlexBrowserDialog(QDialog):
         layout.addLayout(button_layout)
     
     def _connect_to_plex(self):
-        """Connect to Plex server."""
+        """Connect to Plex server using stored configuration."""
         if not PLEX_AVAILABLE:
             self.status_label.setText("❌ PlexAPI not installed. Run: pip install plexapi")
             return
-        
-        token = os.getenv('PLEX_TOKEN', '')
-        if not token:
-            self.status_label.setText("❌ No PLEX_TOKEN in .env file")
+
+        host = self.server_config.get('host')
+        port = self.server_config.get('port', '32400')
+        token = self.server_config.get('token')
+
+        if not host or not token:
+            self.status_label.setText("❌ Missing Plex server details. Reconfigure this server in settings.")
             return
-        
+
+        if not self.username:
+            # Default to first stored user if none explicitly provided
+            users = self.server_config.get('users') or []
+            if users:
+                self.username = users[0].get('username', '')
+
+        if not self.username:
+            self.status_label.setText("❌ No Plex user selected. Update server configuration to include at least one user.")
+            return
+
+        baseurl = f"http://{host}:{port}"
+
         try:
-            # Connect via MyPlex
-            account = MyPlexAccount(token=token)
-            
-            # Get first server
-            servers = [r for r in account.resources() if r.provides == 'server']
-            if not servers:
-                self.status_label.setText("❌ No Plex servers found")
-                return
-            
-            self.plex = servers[0].connect()
-            
-            # Get music library
+            admin_server = PlexServer(baseurl, token=token, timeout=10)
+            if getattr(admin_server, 'friendlyName', None):
+                self.server_display_name = admin_server.friendlyName
+                self.setWindowTitle(f"Browse Plex: {self.server_display_name}")
+
+            account = admin_server.myPlexAccount()
+            stored_users = {u.get('username'): u for u in self.server_config.get('users', [])}
+            stored_user = stored_users.get(self.username, {})
+            stored_pin = stored_user.get('pin', '')
+
+            plex_user = account.user(self.username)
+            if plex_user is None:
+                raise RuntimeError(f"User '{self.username}' is not part of this Plex Home")
+
+            requires_pin = bool(getattr(plex_user, 'protected', False))
+            if requires_pin and not stored_pin:
+                raise RuntimeError(
+                    f"User '{self.username}' requires a PIN. Update the server configuration with their PIN."
+                )
+
+            user_account = account.switchHomeUser(plex_user, pin=stored_pin or None)
+            user_token = user_account.authenticationToken
+            self.plex = PlexServer(baseurl, token=user_token, timeout=10)
+
             music_sections = [s for s in self.plex.library.sections() if s.type == 'artist']
             if not music_sections:
-                self.status_label.setText("❌ No music libraries found")
+                self.status_label.setText("❌ No music libraries found for this user")
                 return
-            
+
             self.music_section = music_sections[0]
-            
-            # Update status
-            self.status_label.setText(f"✅ Connected to: {self.plex.friendlyName} - Library: {self.music_section.title} ({self.music_section.totalSize} items)")
-            
-            # Load initial view (artists)
+            total_items = getattr(self.music_section, 'totalSize', '?')
+            self.status_label.setText(
+                f"✅ {self.server_display_name}: {self.music_section.title} ({total_items} items)"
+            )
+            self.add_button.setEnabled(True)
+            self.search_box.setEnabled(True)
+            self.tree.setEnabled(True)
             self._load_artists()
-            
-        except Exception as e:
-            self.status_label.setText(f"❌ Connection failed: {e}")
-            QMessageBox.warning(self, "Plex Connection Error", str(e))
+
+        except Exception as exc:
+            self.add_button.setEnabled(False)
+            self.status_label.setText(f"❌ Connection failed: {exc}")
+            QMessageBox.warning(self, "Plex Connection Error", str(exc))
     
     def _load_artists(self):
         """Load all artists into tree."""

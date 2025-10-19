@@ -81,7 +81,6 @@ jobs:
             --hidden-import PySide6 `
             --hidden-import numpy `
             --hidden-import scipy `
-            --icon icons/eq.svg `
             sidecar_eq/app.py
       
       - name: Upload Windows Executable
@@ -184,7 +183,7 @@ jobs:
       
       - name: Build AppImage
         run: |
-          ./appimagetool-x86_64.AppImage SidecarEQ.AppDir SidecarEQ-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage SidecarEQ.AppDir SidecarEQ-x86_64.AppImage
       
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
