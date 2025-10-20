@@ -205,7 +205,7 @@ class CollapsiblePanel(QWidget):
             """)
         
         self.content_layout = QVBoxLayout()
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setContentsMargins(0, 8, 0, 0)  # 8px top padding for breathing room
         self.content_layout.setSpacing(0)
         self.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)  # Align content to top, not center
         self.content_container.setLayout(self.content_layout)

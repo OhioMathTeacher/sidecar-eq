@@ -632,24 +632,22 @@ class SearchBar(QWidget):
         if self._is_command(query):
             self.command_entered.emit(query)
             self.search_input.clear()
-            # Note: results_list doesn't exist in category-based search
-            # self.results_list.hide()
             return
+            
         # Always perform a search immediately on Enter (bypass debounce)
         self._perform_search()
 
-        # If results are showing, play the first result from any visible category
-        if self.results_scroll_area.isVisible():
-            # Find first non-empty category and play its first item
-            for category_name, category_widget in self.category_lists.items():
-                list_widget = category_widget.findChild(QListWidget)
-                if list_widget and list_widget.count() > 0:
-                    first_item = list_widget.item(0)
-                    path = first_item.data(Qt.ItemDataRole.UserRole)
-                    if path:
-                        self.result_selected.emit(path, True)  # Add and play immediately
-                        # Keep search results visible so user can browse related tracks
-                        break
+        # After search completes, play the first result from any non-empty category
+        # Find first non-empty category and play its first item
+        for category_name, category_widget in self.category_lists.items():
+            list_widget = category_widget.findChild(QListWidget)
+            if list_widget and list_widget.count() > 0:
+                first_item = list_widget.item(0)
+                path = first_item.data(Qt.ItemDataRole.UserRole)
+                if path:
+                    self.result_selected.emit(path, True)  # Add and play immediately
+                    # Keep search results visible so user can browse related tracks
+                    break
                 
     def _on_result_highlighted(self, current, previous):
         """Handle highlighting a search result (populate info panel).

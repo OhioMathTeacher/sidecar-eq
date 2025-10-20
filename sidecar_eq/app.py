@@ -405,8 +405,8 @@ class MainWindow(QMainWindow):
             central_widget = QWidget()
             central_layout = QVBoxLayout()
             central_layout.setContentsMargins(0, 0, 0, 0)
-            # Add a little breathing room between collapsible panels to avoid cramped headers
-            central_layout.setSpacing(6)
+            # Add breathing room between collapsible panels to avoid cramped headers
+            central_layout.setSpacing(12)
             
             # Panel 1: Song Queue & Metadata (collapsible, accordion style)
             self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
@@ -495,8 +495,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle('Sidecar EQ')
         
-        # Fixed window size to prevent layout issues with collapsible panels
-        self.setFixedSize(1000, 640)
+        # Fixed width, dynamic height calculated by _resize_to_fit_visible_panels
+        self.setFixedWidth(1000)
         
         # Disable window resize (prevents grip/border dragging)
         self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint, True)
@@ -3810,6 +3810,9 @@ Licensed under AGPL v3</p>
                 try:
                     self.eq_panel.lock_content_height(True)
                     self.eq_panel.set_content_stretch(False)
+                    # Force the central layout to align to top
+                    if hasattr(self, '_central_layout'):
+                        self._central_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                 except Exception:
                     pass
                 print("[App] Applied EQ Only layout")
@@ -3849,6 +3852,9 @@ Licensed under AGPL v3</p>
                     self.eq_panel.set_content_stretch(False)
                     self.search_panel.lock_content_height(True)
                     self.search_panel.set_content_stretch(False)
+                    # Reset alignment to default for full view
+                    if hasattr(self, '_central_layout'):
+                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
                 except Exception:
                     pass
                 print("[App] Applied Full View layout")
@@ -3890,7 +3896,7 @@ Licensed under AGPL v3</p>
             extra = 8
             new_h = mbh + tbh + ch + sbh + extra
 
-            # Clamp to sensible range
+            # Clamp to sensible range - restore 480px min for Queue Only
             new_h = max(480, min(new_h, 1000))
 
             # Preserve current width (we keep window non-resizable)
@@ -4142,6 +4148,10 @@ def main():
     except Exception:
         app.__dict__["_vol_filter"] = _vf  # type: ignore[attr-defined]
     w.show()
+
+    # Calculate correct window height based on visible panels
+    QTimer.singleShot(0, w._resize_to_fit_visible_panels)
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":
