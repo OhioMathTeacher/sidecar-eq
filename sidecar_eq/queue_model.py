@@ -12,8 +12,8 @@ from .metadata_extractor import extract_comprehensive_metadata
 
 # Expanded columns for professional music management
 COLUMNS = [
-    "Lookup",      # Metadata lookup (globe icon)
-    "Status",      # Play status indicator (radio button)
+    "",            # Metadata lookup (globe icon)
+    "",            # Play status indicator (radio button)
     "Title", 
     "Artist", 
     "Album",
@@ -127,11 +127,36 @@ class QueueModel(QAbstractTableModel):
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role != Qt.DisplayRole:
-            return None
+        # Horizontal header text (DisplayRole) and tooltips (ToolTipRole)
         if orientation == Qt.Horizontal:
-            return COLUMNS[section]
-        return str(section + 1)
+            if role == Qt.DisplayRole:
+                # Use blank captions for icon-only columns to avoid truncation
+                return COLUMNS[section] if 0 <= section < len(COLUMNS) else ""
+            elif role == Qt.ToolTipRole:
+                # Provide helpful tooltips, especially for icon-only columns
+                tooltips = {
+                    0: "Lookup: Fetch online metadata for the selected track",
+                    1: "Status: Current play state",
+                    2: "Title",
+                    3: "Artist",
+                    4: "Album",
+                    5: "Year",
+                    6: "Label",
+                    7: "Producer",
+                    8: "Rating",
+                    9: "Bitrate",
+                    10: "Format",
+                    11: "Sample Rate",
+                    12: "Bit Depth",
+                    13: "Duration",
+                    14: "Play Count",
+                }
+                return tooltips.get(section, "")
+        else:
+            # Row headers (1-based index)
+            if role == Qt.DisplayRole:
+                return str(section + 1)
+        return None
 
     def flags(self, index):
         default = super().flags(index)
