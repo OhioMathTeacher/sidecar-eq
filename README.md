@@ -64,7 +64,9 @@ python -m sidecar_eq.app
 4. **Save Settings**: Click the save button - done! That track will always sound perfect
 5. **Repeat**: Each song gets its own custom sound profile
 
-## � Documentation
+## 📚 Documentation
+
+**[📋 Product Roadmap](ROADMAP.md)** - Vision, timelines, and upcoming features (v1.x → v2.x → v3.x)
 
 Detailed guides available in the [docs](docs/) folder:
 - [Product Vision & Roadmap](docs/VERSION_GOALS.md)

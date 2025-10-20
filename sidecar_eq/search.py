@@ -44,7 +44,7 @@ class SearchBar(QWidget):
     """
     
     # Signals
-    result_selected = Signal(str, bool)  # (file_path, play_immediately)
+    result_selected = Signal(object, bool)  # (data, play_immediately) - data can be path string or dict with type/paths
     command_entered = Signal(str)  # command string
     
     def __init__(self, parent=None):
@@ -210,18 +210,18 @@ class SearchBar(QWidget):
                 Top Plays, Matching Songs, Albums, and Related Artists.
             </p>
             
+            <p style='color: #4a9eff; font-size: 12px; margin-bottom: 8px;'>
+                <strong>Adding Songs to Queue:</strong>
+            </p>
+            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
+                • <strong>Single-click</strong> a song → Adds to queue (no play)<br>
+                • <strong>Double-click</strong> a song → Adds to queue AND plays immediately<br>
+                • <strong>Press Enter</strong> → Plays first search result
+            </p>
+            
             <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
                 EQ Features: 7-band EQ with LED meters. Settings save automatically per track. 
                 Use the save button to manually save (turns green when saved).
-            </p>
-            
-            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
-                Quick Keys: Space = Play/Pause, Enter = Play first result, Double-click = Play from results
-            </p>
-            
-            <p style='color: #c0c0c0; font-size: 11px; line-height: 1.6; margin-bottom: 10px;'>
-                Queue Tips: Click the globe icon to fetch online metadata. Drag rows to reorder. 
-                Right-click column headers to show/hide columns.
             </p>
             
             <p style='color: #808080; font-size: 10px; font-style: italic; margin-top: 15px;'>
@@ -305,15 +305,19 @@ class SearchBar(QWidget):
             QListWidget::item {
                 padding: 5px 8px;
                 border-bottom: 1px solid #333;
+                cursor: pointer;
             }
             QListWidget::item:hover {
                 background: #3a3a3a;
+                border-left: 3px solid #4a9eff;
             }
             QListWidget::item:selected {
                 background: #4a9eff;
                 color: #ffffff;
             }
         """)
+        # Connect both single and double click
+        list_widget.itemClicked.connect(self._on_category_item_clicked)
         list_widget.itemDoubleClicked.connect(self._on_category_item_double_clicked)
         container_layout.addWidget(list_widget)
         
@@ -435,7 +439,14 @@ class SearchBar(QWidget):
         
         for i, song in enumerate(songs[:10]):
             item = QListWidgetItem(f"{i+1}. {song.title[:25]}{'...' if len(song.title) > 25 else ''}\n   {song.artist[:20]} • {song.play_count} plays")
-            item.setData(Qt.ItemDataRole.UserRole, song.path)
+            # Store song data (single path)
+            song_data = {
+                'type': 'song',
+                'title': song.title,
+                'artist': song.artist,
+                'paths': [song.path]
+            }
+            item.setData(Qt.ItemDataRole.UserRole, song_data)
             list_widget.addItem(item)
     
     def _populate_matching_songs(self, songs: List[Song]):
@@ -444,7 +455,14 @@ class SearchBar(QWidget):
         
         for i, song in enumerate(songs[:10]):
             item = QListWidgetItem(f"{i+1}. {song.title[:25]}{'...' if len(song.title) > 25 else''}\n   {song.artist[:20]}")
-            item.setData(Qt.ItemDataRole.UserRole, song.path)
+            # Store song data (single path)
+            song_data = {
+                'type': 'song',
+                'title': song.title,
+                'artist': song.artist,
+                'paths': [song.path]
+            }
+            item.setData(Qt.ItemDataRole.UserRole, song_data)
             list_widget.addItem(item)
     
     def _populate_albums_from_results(self, albums: List[Album]):
@@ -453,9 +471,14 @@ class SearchBar(QWidget):
         
         for i, album in enumerate(albums[:10]):
             item = QListWidgetItem(f"{i+1}. {album.title[:25]}{'...' if len(album.title) > 25 else ''}\n   {album.artist[:20]} • {album.song_count} tracks")
-            # Store path to first song in album
-            path = album.songs[0].path if album.songs else None
-            item.setData(Qt.ItemDataRole.UserRole, path)
+            # Store album data with all song paths
+            album_data = {
+                'type': 'album',
+                'title': album.title,
+                'artist': album.artist,
+                'paths': [song.path for song in album.songs]
+            }
+            item.setData(Qt.ItemDataRole.UserRole, album_data)
             list_widget.addItem(item)
     
     def _populate_related_artists(self, artists: List[Artist]):
@@ -464,18 +487,35 @@ class SearchBar(QWidget):
         
         for i, artist in enumerate(artists[:10]):
             item = QListWidgetItem(f"{i+1}. {artist.name[:30]}{'...' if len(artist.name) > 30 else ''}\n   {artist.song_count} tracks • {artist.total_plays} plays")
-            # Store path to first song by this artist
+            # Store artist data with all song paths
             all_songs = artist.get_all_songs()
-            path = all_songs[0].path if all_songs else None
-            item.setData(Qt.ItemDataRole.UserRole, path)
+            artist_data = {
+                'type': 'artist',
+                'name': artist.name,
+                'paths': [song.path for song in all_songs]
+            }
+            item.setData(Qt.ItemDataRole.UserRole, artist_data)
             list_widget.addItem(item)
     
     def _on_category_item_double_clicked(self, item):
-        """Handle double-click on category item - add to queue."""
-        # Use correct enum for retrieving stored file path
-        path = item.data(Qt.ItemDataRole.UserRole)
-        if path:
-            self.result_selected.emit(path, True)  # True = play immediately
+        """Handle double-click on category item - play immediately."""
+        # Retrieve data (can be dict with type/paths or legacy path string)
+        data = item.data(Qt.ItemDataRole.UserRole)
+        print(f"[SearchBar] Double-click - Data: {data}")
+        if data:
+            self.result_selected.emit(data, True)  # True = play immediately
+        else:
+            print("[SearchBar] Warning: No data in item")
+    
+    def _on_category_item_clicked(self, item):
+        """Handle single-click on category item - add to queue (no play)."""
+        # Retrieve data (can be dict with type/paths or legacy path string)
+        data = item.data(Qt.ItemDataRole.UserRole)
+        print(f"[SearchBar] Single-click - Data: {data}")
+        if data:
+            self.result_selected.emit(data, False)  # False = add to queue only
+        else:
+            print("[SearchBar] Warning: No data in item")
             
     def _is_command(self, text: str) -> bool:
         """Check if input looks like a command.
@@ -639,13 +679,13 @@ class SearchBar(QWidget):
 
         # After search completes, play the first result from any non-empty category
         # Find first non-empty category and play its first item
-        for category_name, category_widget in self.category_lists.items():
+        for _category_name, category_widget in self.category_lists.items():
             list_widget = category_widget.findChild(QListWidget)
             if list_widget and list_widget.count() > 0:
                 first_item = list_widget.item(0)
-                path = first_item.data(Qt.ItemDataRole.UserRole)
-                if path:
-                    self.result_selected.emit(path, True)  # Add and play immediately
+                data = first_item.data(Qt.ItemDataRole.UserRole)
+                if data:
+                    self.result_selected.emit(data, True)  # Add and play immediately
                     # Keep search results visible so user can browse related tracks
                     break
                 

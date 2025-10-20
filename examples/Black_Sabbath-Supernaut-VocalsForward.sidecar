@@ -1,0 +1,393 @@
+{
+  "sidecar_remix_version": "1.0",
+  "song_id": {
+    "title": "Supernaut",
+    "artist": "Black Sabbath",
+    "album": "Vol. 4",
+    "duration_ms": 264000,
+    "fingerprint": "acb8f3e9a1c2d4f5e6a7b8c9d0e1f2a3"
+  },
+  "metadata": {
+    "remix_name": "Vocals-Forward Mix",
+    "creator": "todd@example.com",
+    "created": "2025-10-20T15:30:00Z",
+    "description": "Brings Ozzy's vocals to the front of the mix while taming the heavy guitar distortion. Makes the lyrics much clearer without losing the power of the original.",
+    "tags": ["vocal-focused", "clearer-mix", "radio-friendly", "beginner-friendly"],
+    "version": "1.2",
+    "based_on": null,
+    "changelog": [
+      "v1.0 - Initial mix",
+      "v1.1 - Increased vocal clarity at 2.4kHz",
+      "v1.2 - Reduced guitar harshness, boosted bass presence"
+    ]
+  },
+  "stems": {
+    "vocals": {
+      "volume": 1.35,
+      "muted": false,
+      "solo": false,
+      "eq": [
+        {
+          "band": 0,
+          "frequency": 60,
+          "gain": -2.0,
+          "q": 0.7,
+          "note": "Cut mud from vocals"
+        },
+        {
+          "band": 1,
+          "frequency": 150,
+          "gain": -1.0,
+          "q": 0.7,
+          "note": "Reduce boominess"
+        },
+        {
+          "band": 2,
+          "frequency": 400,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 3,
+          "frequency": 1000,
+          "gain": 2.5,
+          "q": 0.7,
+          "note": "Boost vocal presence"
+        },
+        {
+          "band": 4,
+          "frequency": 2400,
+          "gain": 3.0,
+          "q": 0.7,
+          "note": "Key vocal clarity frequency"
+        },
+        {
+          "band": 5,
+          "frequency": 6000,
+          "gain": 1.5,
+          "q": 0.7,
+          "note": "Add air and definition"
+        },
+        {
+          "band": 6,
+          "frequency": 15000,
+          "gain": 2.0,
+          "q": 0.7,
+          "note": "Sparkle and brilliance"
+        }
+      ],
+      "notes": "Ozzy's voice really shines when you bring up 1-3kHz. The original mix buries the vocals under the guitar."
+    },
+    "drums": {
+      "volume": 0.85,
+      "muted": false,
+      "solo": false,
+      "eq": [
+        {
+          "band": 0,
+          "frequency": 60,
+          "gain": 1.5,
+          "q": 0.7,
+          "note": "Enhance kick drum thump"
+        },
+        {
+          "band": 1,
+          "frequency": 150,
+          "gain": 0.5,
+          "q": 0.7,
+          "note": "Slight body boost"
+        },
+        {
+          "band": 2,
+          "frequency": 400,
+          "gain": -1.0,
+          "q": 0.7,
+          "note": "Reduce muddiness"
+        },
+        {
+          "band": 3,
+          "frequency": 1000,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 4,
+          "frequency": 2400,
+          "gain": 1.0,
+          "q": 0.7,
+          "note": "Snare attack"
+        },
+        {
+          "band": 5,
+          "frequency": 6000,
+          "gain": 2.0,
+          "q": 0.7,
+          "note": "Hi-hat clarity"
+        },
+        {
+          "band": 6,
+          "frequency": 15000,
+          "gain": 1.0,
+          "q": 0.7,
+          "note": "Cymbal shimmer"
+        }
+      ],
+      "notes": "Bill Ward's drumming is incredible. Kept it slightly back to make room for vocals."
+    },
+    "bass": {
+      "volume": 1.1,
+      "muted": false,
+      "solo": false,
+      "eq": [
+        {
+          "band": 0,
+          "frequency": 60,
+          "gain": 2.0,
+          "q": 0.7,
+          "note": "Deep bass foundation"
+        },
+        {
+          "band": 1,
+          "frequency": 150,
+          "gain": 1.5,
+          "q": 0.7,
+          "note": "Bass body and warmth"
+        },
+        {
+          "band": 2,
+          "frequency": 400,
+          "gain": 0.5,
+          "q": 0.7,
+          "note": "Slight presence boost"
+        },
+        {
+          "band": 3,
+          "frequency": 1000,
+          "gain": -1.0,
+          "q": 0.7,
+          "note": "Reduce midrange clutter"
+        },
+        {
+          "band": 4,
+          "frequency": 2400,
+          "gain": -2.0,
+          "q": 0.7,
+          "note": "Cut upper mids"
+        },
+        {
+          "band": 5,
+          "frequency": 6000,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 6,
+          "frequency": 15000,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "No high end needed"
+        }
+      ],
+      "notes": "Geezer Butler's bass line carries this song. Boosted it to compete with the guitar."
+    },
+    "guitar": {
+      "volume": 0.65,
+      "muted": false,
+      "solo": false,
+      "eq": [
+        {
+          "band": 0,
+          "frequency": 60,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Leave low end to bass"
+        },
+        {
+          "band": 1,
+          "frequency": 150,
+          "gain": -1.0,
+          "q": 0.7,
+          "note": "Reduce low-mid buildup"
+        },
+        {
+          "band": 2,
+          "frequency": 400,
+          "gain": -3.0,
+          "q": 0.7,
+          "note": "Major cut to reduce harshness"
+        },
+        {
+          "band": 3,
+          "frequency": 1000,
+          "gain": -2.0,
+          "q": 0.7,
+          "note": "Reduce mid frequency fight with vocals"
+        },
+        {
+          "band": 4,
+          "frequency": 2400,
+          "gain": -4.0,
+          "q": 0.7,
+          "note": "Aggressive cut of harsh frequencies"
+        },
+        {
+          "band": 5,
+          "frequency": 6000,
+          "gain": -1.0,
+          "q": 0.7,
+          "note": "Slight high-mid reduction"
+        },
+        {
+          "band": 6,
+          "frequency": 15000,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Keep natural shimmer"
+        }
+      ],
+      "notes": "The original mix has WAY too much distorted guitar. Tony Iommi's riffs are still powerful but now don't overwhelm everything else."
+    },
+    "other": {
+      "volume": 0.9,
+      "muted": false,
+      "solo": false,
+      "eq": [
+        {
+          "band": 0,
+          "frequency": 60,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 1,
+          "frequency": 150,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 2,
+          "frequency": 400,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 3,
+          "frequency": 1000,
+          "gain": 0.5,
+          "q": 0.7,
+          "note": "Slight boost for ambience"
+        },
+        {
+          "band": 4,
+          "frequency": 2400,
+          "gain": 0.0,
+          "q": 0.7,
+          "note": "Neutral"
+        },
+        {
+          "band": 5,
+          "frequency": 6000,
+          "gain": 1.0,
+          "q": 0.7,
+          "note": "Enhance room sound"
+        },
+        {
+          "band": 6,
+          "frequency": 15000,
+          "gain": 1.5,
+          "q": 0.7,
+          "note": "Add air and space"
+        }
+      ],
+      "notes": "Mostly room ambience and effects. Kept subtle."
+    }
+  },
+  "master": {
+    "volume": 0.95,
+    "eq": [
+      {
+        "band": 0,
+        "frequency": 60,
+        "gain": 0.0,
+        "q": 0.7,
+        "note": "No master EQ on low end"
+      },
+      {
+        "band": 1,
+        "frequency": 150,
+        "gain": 0.0,
+        "q": 0.7,
+        "note": "Neutral"
+      },
+      {
+        "band": 2,
+        "frequency": 400,
+        "gain": 0.0,
+        "q": 0.7,
+        "note": "Neutral"
+      },
+      {
+        "band": 3,
+        "frequency": 1000,
+        "gain": 0.5,
+        "q": 0.7,
+        "note": "Slight overall presence lift"
+      },
+      {
+        "band": 4,
+        "frequency": 2400,
+        "gain": 0.0,
+        "q": 0.7,
+        "note": "Neutral"
+      },
+      {
+        "band": 5,
+        "frequency": 6000,
+        "gain": 1.0,
+        "q": 0.7,
+        "note": "Add overall air"
+      },
+      {
+        "band": 6,
+        "frequency": 15000,
+        "gain": 0.5,
+        "q": 0.7,
+        "note": "Subtle top-end polish"
+      }
+    ],
+    "limiter": {
+      "enabled": true,
+      "threshold": -0.5,
+      "release": 100,
+      "note": "Gentle limiting to prevent clipping from EQ boosts"
+    }
+  },
+  "usage_stats": {
+    "plays": 847,
+    "downloads": 132,
+    "forks": 8,
+    "rating": 4.7,
+    "rating_count": 45
+  },
+  "technical_info": {
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "processing_chain": "stems → per-stem EQ → per-stem volume → mix → master EQ → limiter → output",
+    "latency_ms": 8.3,
+    "cpu_usage_percent": 4.2
+  },
+  "compatibility": {
+    "min_sidecar_version": "2.0.0",
+    "requires_stems": true,
+    "tested_with": ["2.0.0", "2.1.0", "2.2.0"]
+  },
+  "remix_notes": "This is my take on a more radio-friendly version of Supernaut. The original 1972 mix is very guitar-heavy and the vocals get buried. By bringing Ozzy's voice forward and taming Tony's crushing guitar tone (without removing the power!), you can actually hear the brilliant lyrics and vocal melodies. Perfect for introducing someone to Black Sabbath who might be intimidated by the wall-of-distortion original mix. \n\nThe bass and drums are given more room to breathe, which really showcases how tight and groovy the rhythm section is. This isn't a 'fix' of the original - it's an alternate perspective that highlights different aspects of this incredible song.\n\nFeel free to fork this and experiment! Some ideas: try boosting the drums more for a 'drummer's cut', or create a 'karaoke version' by muting the vocals entirely.",
+  "license": "CC-BY-SA-4.0",
+  "share_url": "https://sidecar-remixes.com/remixes/black-sabbath/supernaut/vocals-forward-v1.2"
+}

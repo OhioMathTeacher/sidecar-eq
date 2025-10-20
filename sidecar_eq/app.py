@@ -622,6 +622,9 @@ class MainWindow(QMainWindow):
             
             # Use a timer to ensure everything is fully initialized
             QTimer.singleShot(100, self._do_initial_selection)
+            
+            # Check for missing volumes after initialization
+            QTimer.singleShot(1000, self._check_for_missing_volumes)
     
     def _do_initial_selection(self):
         """Select and display info for the first track in the queue (without playing).
@@ -938,7 +941,7 @@ class MainWindow(QMainWindow):
             "Full View",
             "Queue Only",
             "EQ Only",
-            "Search Only"
+            "Search & Queue"
         ])
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Full View
         self._layout_preset_combo.setToolTip("Select layout preset")
@@ -1455,7 +1458,7 @@ class MainWindow(QMainWindow):
         layout_grp.addAction(act_eq_only)
         m_layout.addAction(act_eq_only)
 
-        act_search_only = QAction("Search Only", self)
+        act_search_only = QAction("Search && Queue", self)
         act_search_only.setCheckable(True)
         act_search_only.triggered.connect(lambda: self._apply_layout_preset("search_only"))
         layout_grp.addAction(act_search_only)
@@ -1829,14 +1832,29 @@ Licensed under AGPL v3</p>
             self._update_led_meters_playback(False)
         else:
             # Check if we're in paused state (track loaded but not playing)
-            if self.current_row is not None and self.player._player.playbackState() == QMediaPlayer.PausedState:
-                # Resume from paused position
+            # Use the Player's is_playing() method which works for both AudioEngine and QMediaPlayer
+            if self.current_row is not None and hasattr(self.player, '_engine') and self.player._use_audio_engine:
+                # AudioEngine: check if paused
+                if self.player._engine.is_paused:
+                    # Resume from paused position
+                    self.player._engine.play()  # This will resume
+                    self.statusBar().showMessage("Playing (resumed)")
+                    self.play_btn.setActive(True)
+                    self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_PLAYING)
+                    self._update_led_meters_playback(True)
+                elif self.current_row is None:
+                    # No track loaded - start from selected or first row
+                    sel = self.table.selectionModel().selectedRows()
+                    self._play_row(sel[0].row() if sel else 0)
+                else:
+                    # Track was stopped, restart from beginning
+                    self._play_row(self.current_row)
+            elif self.current_row is not None and self.player._player.playbackState() == QMediaPlayer.PausedState:
+                # QMediaPlayer: Resume from paused position
                 self.player._player.play()
                 self.statusBar().showMessage("Playing (resumed)")
                 self.play_btn.setActive(True)
-                # Update play state indicator back to playing
                 self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_PLAYING)
-                # Start LED meters when resumed
                 self._update_led_meters_playback(True)
             elif self.current_row is None:
                 # No track loaded - start from selected or first row
@@ -1936,30 +1954,228 @@ Licensed under AGPL v3</p>
         self.model.remove_rows(rows)
         self.statusBar().showMessage(f"Removed {len(rows)} rows")
 
-    def _on_search_result_selected(self, file_path: str, play_immediately: bool):
+    def _on_search_result_selected(self, data, play_immediately: bool):
         """Handle selection of a search result.
         
         Args:
-            file_path: Path to the selected audio file
+            data: Either a file path string (legacy) or dict with 'type' and 'paths'
             play_immediately: If True, add and play; if False, just add to queue
         """
-        if not file_path or not Path(file_path).exists():
-            self.statusBar().showMessage("File not found!", 3000)
+        # Handle both legacy (string path) and new (dict) formats
+        if isinstance(data, str):
+            # Legacy format - single file path
+            file_paths = [data]
+            result_type = 'song'
+        elif isinstance(data, dict):
+            # New format - dict with type and paths
+            file_paths = data.get('paths', [])
+            result_type = data.get('type', 'song')
+        else:
+            self.statusBar().showMessage("❌ Invalid search result data!", 3000)
+            print(f"[App] Error: Unexpected data type: {type(data)}")
             return
+        
+        if not file_paths:
+            self.statusBar().showMessage("❌ No file paths provided!", 3000)
+            print(f"[App] Error: file_paths is empty")
+            return
+        
+        # Debug: Log what we received
+        print(f"[App] Search result selected: {result_type} with {len(file_paths)} file(s)")
+        print(f"[App] Play immediately: {play_immediately}")
+        
+        # Filter out files that don't exist and collect missing ones
+        existing_paths = []
+        missing_paths = []
+        
+        for file_path in file_paths:
+            file_path_obj = Path(file_path)
+            if file_path_obj.exists():
+                existing_paths.append(file_path)
+            else:
+                missing_paths.append(file_path)
+                print(f"[App] Warning: File does not exist at: {file_path}")
+        
+        # If some files are missing, show error dialog
+        if missing_paths:
+            # Show error for first missing file
+            self._show_missing_file_dialog(missing_paths[0])
             
-        # Add to queue
-        count = self.model.add_paths([file_path])
+            # If ALL files are missing, don't add anything
+            if not existing_paths:
+                self.statusBar().showMessage(f"❌ All files not found!", 4000)
+                return
+            else:
+                # Some files exist - show warning and continue with existing ones
+                self.statusBar().showMessage(
+                    f"⚠️  {len(missing_paths)} file(s) not found, adding {len(existing_paths)} available", 
+                    4000
+                )
+        
+        # Add existing files to queue
+        count = self.model.add_paths(existing_paths)
         
         if count > 0:
             new_row = len(self.model._rows) - 1  # Last row added
             
             if play_immediately:
-                # Play the new track immediately
-                self._play_row(new_row)
-                self.statusBar().showMessage(f"Playing: {Path(file_path).name}", 3000)
+                # Play the first new track immediately
+                first_new_row = new_row - count + 1
+                self._play_row(first_new_row)
+                
+                # Show appropriate message based on type
+                if result_type == 'album':
+                    album_title = data.get('title', 'Unknown Album')
+                    self.statusBar().showMessage(f"▶️  Playing Album: {album_title} ({count} tracks)", 4000)
+                elif result_type == 'artist':
+                    artist_name = data.get('name', 'Unknown Artist')
+                    self.statusBar().showMessage(f"▶️  Playing Artist: {artist_name} ({count} tracks)", 4000)
+                else:
+                    filename = Path(existing_paths[0]).name
+                    self.statusBar().showMessage(f"▶️  Now Playing: {filename}", 4000)
+                    
+                self.statusBar().setStyleSheet("QStatusBar { background: #2a4a2a; color: #4eff4e; }")
+                # Reset style after message
+                QTimer.singleShot(4000, lambda: self.statusBar().setStyleSheet(""))
             else:
-                # Just added to queue
-                self.statusBar().showMessage(f"Added: {Path(file_path).name}", 2000)
+                # Just added to queue - show clear feedback
+                if result_type == 'album':
+                    album_title = data.get('title', 'Unknown Album')
+                    self.statusBar().showMessage(f"✅ Added Album to Queue: {album_title} ({count} tracks)", 3000)
+                elif result_type == 'artist':
+                    artist_name = data.get('name', 'Unknown Artist')
+                    self.statusBar().showMessage(f"✅ Added Artist to Queue: {artist_name} ({count} tracks)", 3000)
+                else:
+                    filename = Path(existing_paths[0]).name
+                    self.statusBar().showMessage(f"✅ Added to Queue: {filename}", 3000)
+                    
+                self.statusBar().setStyleSheet("QStatusBar { background: #2a3a4a; color: #4a9eff; }")
+                # Reset style after message
+                QTimer.singleShot(3000, lambda: self.statusBar().setStyleSheet(""))
+        else:
+            self.statusBar().showMessage(f"⚠️  Could not add file(s) to queue", 3000)
+            print(f"[App] Error: model.add_paths returned 0 for {len(existing_paths)} path(s)")
+    
+    def _show_missing_file_dialog(self, file_path: str):
+        """Show dialog when file is not found, with helpful suggestions.
+        
+        Args:
+            file_path: The missing file path
+        """
+        from PySide6.QtWidgets import QMessageBox, QPushButton
+        
+        file_path_obj = Path(file_path)
+        
+        # Detect if it's on an external volume
+        is_volume = file_path.startswith('/Volumes/')
+        volume_name = None
+        if is_volume:
+            parts = file_path.split('/')
+            if len(parts) > 2:
+                volume_name = parts[2]
+        
+        # Create message box
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("File Not Found")
+        
+        if is_volume and volume_name:
+            msg.setText(f"Cannot access file on unmounted volume")
+            msg.setInformativeText(
+                f"<b>Volume:</b> {volume_name}<br>"
+                f"<b>File:</b> {file_path_obj.name}<br><br>"
+                f"This file is on an external drive or network share that is not currently connected.<br><br>"
+                f"<b>Solutions:</b><br>"
+                f"• Connect/mount the <b>{volume_name}</b> volume<br>"
+                f"• Re-index your music library from a new location<br>"
+                f"• Check if the file has been moved or deleted"
+            )
+        else:
+            msg.setText(f"File not found")
+            msg.setInformativeText(
+                f"<b>Path:</b> {file_path}<br><br>"
+                f"The file may have been moved, renamed, or deleted.<br><br>"
+                f"<b>Suggestions:</b><br>"
+                f"• Check if the file still exists at this location<br>"
+                f"• Re-index your music library (File → Index Folder...)<br>"
+                f"• Verify the file hasn't been moved to a different folder"
+            )
+        
+        # Add buttons
+        msg.setStandardButtons(QMessageBox.Ok)
+        
+        # Add "Re-index Library" button if it's a volume issue
+        if is_volume:
+            reindex_btn = msg.addButton("Re-index Library...", QMessageBox.ActionRole)
+            reindex_btn.clicked.connect(lambda: self._handle_reindex_request())
+        
+        msg.exec()
+    
+    def _handle_reindex_request(self):
+        """Handle request to re-index library after missing file error."""
+        # Trigger the index folder action
+        from PySide6.QtWidgets import QMessageBox
+        
+        reply = QMessageBox.question(
+            self,
+            "Re-index Music Library",
+            "This will scan a new folder and update your music library.\n\n"
+            "Note: This will replace your current library index.\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Call the existing index folder method
+            self._index_music_folder()
+    
+    def _check_for_missing_volumes(self):
+        """Check if any files in the library are on unmounted volumes and show notification."""
+        if not self.indexer:
+            return
+        
+        library = self.indexer.get_library()
+        if not library:
+            return
+        
+        # Collect missing volume information
+        missing_volumes = set()
+        missing_count = 0
+        
+        for artist in library.artists.values():
+            for album in artist.albums.values():
+                for song in album.songs:
+                    if not Path(song.path).exists():
+                        # Check if it's on a volume
+                        if song.path.startswith('/Volumes/'):
+                            parts = song.path.split('/')
+                            if len(parts) > 2:
+                                missing_volumes.add(parts[2])
+                        missing_count += 1
+        
+        # Show notification if missing files found
+        if missing_volumes:
+            from PySide6.QtWidgets import QMessageBox
+            
+            volumes_str = ", ".join(sorted(missing_volumes))
+            
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Unmounted Volumes Detected")
+            msg.setText(f"Some music files are on unmounted volumes")
+            msg.setInformativeText(
+                f"<b>{missing_count}</b> files are unavailable on these volumes:<br>"
+                f"<b>{volumes_str}</b><br><br>"
+                f"To access these files:<br>"
+                f"• Connect/mount the external drive(s)<br>"
+                f"• Or re-index your library from a new location<br><br>"
+                f"You can still use files that are currently available."
+            )
+            msg.setStandardButtons(QMessageBox.Ok)
+            
+            # Don't block - use a timer to show after the window is visible
+            QTimer.singleShot(500, msg.exec)
                 
     def _on_command_entered(self, command: str):
         """Handle command entered in search bar.
@@ -3774,6 +3990,10 @@ Licensed under AGPL v3</p>
         
         Args:
             preset: One of "full_view", "queue_only", "eq_only", "search_only"
+                - full_view: All panels visible (search, queue, EQ)
+                - queue_only: Just the queue panel
+                - eq_only: Just the EQ panel
+                - search_only: Search & queue panels (Full View minus EQ)
         """
         try:
             # Remember current preset for stretch logic nuances
@@ -3818,23 +4038,33 @@ Licensed under AGPL v3</p>
                 print("[App] Applied EQ Only layout")
                 
             elif preset == "search_only":
-                # Search Only
-                self.queue_panel.set_collapsed(True)
+                # Search & Queue View (Full View minus EQ)
+                # Show search panel and compact queue at bottom
+                self.queue_panel.set_collapsed(False)  # Keep queue visible
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(False)
-                self.queue_panel.setVisible(False)
+                self.queue_panel.setVisible(True)      # Keep queue visible!
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(True)
-                # Force search panel to fill remaining space
+                
+                # Make queue compact (70% of space to search, 30% to queue)
                 try:
+                    # Search panel gets most of the space
                     self.search_panel.lock_content_height(False)
                     self.search_panel.set_content_stretch(True)
+                    
+                    # Queue stays compact at bottom
+                    self.queue_panel.lock_content_height(True)
+                    self.queue_panel.set_content_stretch(False)
+                    
+                    # Adjust search bar to expand
                     if getattr(self, 'search_bar', None) is not None:
                         from PySide6.QtWidgets import QSizePolicy
                         self.search_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-                except Exception:
-                    pass
-                print("[App] Applied Search Only layout")
+                except Exception as e:
+                    print(f"[App] Error configuring Search & Queue layout: {e}")
+                    
+                print("[App] Applied Search & Queue layout (search + mini queue)")
                 
             elif preset == "full_view":
                 # Full View - all panels visible
@@ -3874,7 +4104,7 @@ Licensed under AGPL v3</p>
         """Resize the fixed-height window to fit the toolbar + visible panels + status bar.
         
         Keeps the non-resizable behavior but avoids large empty space when fewer panels are visible
-        (e.g., EQ Only or Search Only). Width remains unchanged.
+        (e.g., EQ Only or Search & Queue). Width remains unchanged.
         """
         try:
             # Activate layouts to get accurate size hints
@@ -4031,7 +4261,7 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
         
         Args:
-            index: 0=Full View, 1=Queue Only, 2=EQ Only, 3=Search Only
+            index: 0=Full View, 1=Queue Only, 2=EQ Only, 3=Search & Queue
         """
         presets = ["full_view", "queue_only", "eq_only", "search_only"]
         if 0 <= index < len(presets):
