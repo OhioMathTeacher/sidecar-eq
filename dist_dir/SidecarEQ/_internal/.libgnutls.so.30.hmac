@@ -1,0 +1,14 @@
+[global]
+format-version = 1
+[libgnutls.so.30]
+path = /lib64/libgnutls.so.30.40.4
+hmac = 89d8a547e7cef1195e8585e34e5683c1d4382cb8521e78017cc76b8014ecc84a
+[libhogweed.so.6]
+path = /usr/lib64/libhogweed.so.6.10
+hmac = 38deeeb3172e56001c1bae18e60ed33deed8866f47fd8c26ac9871b5e3273078
+[libnettle.so.8]
+path = /usr/lib64/libnettle.so.8.10
+hmac = 68e6855697ecc62d3ca7a85dfce211aaf0cbdeeda39e7db003879f5b30fbfd7a
+[libgmp.so.10]
+path = /usr/lib64/libgmp.so.10.5.0
+hmac = c1e319c556239976a8bf9fbbd9399c361d1c9bf356f6b69ef09ea7b55f174110

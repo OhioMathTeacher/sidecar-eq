@@ -3704,6 +3704,16 @@ Licensed under AGPL v3</p>
         except Exception as e:
             print(f"[App] Failed to toggle LED meters: {e}")
     
+    def _toggle_repeat(self):
+        """Toggle repeat mode for the current track."""
+        self._repeat_enabled = self._repeat_btn.isChecked()
+        if self._repeat_enabled:
+            self._repeat_btn.setText("🔁 Repeat: On")
+            print("[App] Repeat mode enabled")
+        else:
+            self._repeat_btn.setText("🔁 Repeat: Off")
+            print("[App] Repeat mode disabled")
+    
     def _on_eq_label_changed(self, val, idx):
         """Update the value label only - does not apply EQ (prevents crackling during drag)."""
         # Update the value label for this slider
@@ -3989,7 +3999,7 @@ Licensed under AGPL v3</p>
         from PySide6.QtMultimedia import QMediaPlayer
         
         if status == QMediaPlayer.EndOfMedia:
-            if self._repeat_mode:
+            if self._repeat_enabled:
                 # Repeat current track
                 print(f"[App] Repeat mode: replaying track {self.current_row}")
                 self._play_row(self.current_row)
@@ -4723,9 +4733,10 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
         
         Args:
-            index: 0=All Panels, 1=Queue + EQ, 2=Queue Only, 3=EQ Only, 4=Search & Queue
+            index: 0=Queue + EQ, 1=Queue Only, 2=EQ Only, 3=Search & Queue
         """
-        presets = ["all_panels", "queue_eq", "queue_only", "eq_only", "search_only"]
+        # Map dropdown indices to preset names (removed "all_panels")
+        presets = ["queue_eq", "queue_only", "eq_only", "search_queue"]
         if 0 <= index < len(presets):
             self._apply_layout_preset(presets[index])
     
