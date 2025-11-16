@@ -108,7 +108,6 @@
 				"-m",
 				"pip",
 				"install",
-				"--user",
 				"-e",
 				".[dev]"
 			],

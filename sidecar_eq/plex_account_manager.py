@@ -1,6 +1,7 @@
-"""
-Plex Server Manager - Discover and connect to Plex servers on local network.
-Uses direct server connection with Home Users (managed accounts), not full Plex accounts.
+"""Plex Server Manager.
+
+Discover and connect to Plex servers on the local network using GDM, and
+configure Home Users (managed accounts) for playback in SidecarEQ.
 """
 
 from PySide6.QtWidgets import (
@@ -11,12 +12,17 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal
 
+from .logging_config import get_logger
+
 try:
     from plexapi.server import PlexServer
     from plexapi.gdm import GDM
     PLEX_AVAILABLE = True
 except ImportError:
     PLEX_AVAILABLE = False
+
+
+logger = get_logger(__name__)
 
 
 class PlexDiscoveryThread(QThread):
@@ -27,26 +33,76 @@ class PlexDiscoveryThread(QThread):
     def run(self):
         """Scan local network for Plex servers using GDM."""
         if not PLEX_AVAILABLE:
+            logger.warning("Plex discovery requested but PlexAPI is not available")
             self.servers_found.emit([])
             return
             
         try:
+            logger.info("Starting Plex GDM scan")
             gdm = GDM()
             gdm.scan()
+            entries = getattr(gdm, "entries", None)
+            logger.debug("GDM entries raw: %r", entries)
+
             servers = []
-            
+
             for entry in gdm.entries:
-                servers.append({
-                    'name': entry.get('Name', 'Unknown Server'),
-                    'host': entry.get('host', ''),
-                    'port': entry.get('port', '32400'),
-                    'uri': entry.get('uri', ''),
-                    'token': entry.get('accessToken') or entry.get('token'),
-                })
+                logger.debug("GDM entry: %r", entry)
+
+                # plexapi.gdm.GDM returns entries as a dict with "data" and
+                # "from" keys, for example::
+                #
+                #   {
+                #       "data": {
+                #           "Name": "Downstairs",
+                #           "Host": "...plex.direct",
+                #           "Port": "32400",
+                #           ...
+                #       },
+                #       "from": ("192.168.68.57", 32414),
+                #   }
+                #
+                # We prefer the LAN IP from the "from" tuple for direct
+                # connections, but still keep the friendly Name from the
+                # "data" payload.
+
+                data = entry.get("data", {}) or {}
+                addr = entry.get("from", ("", None)) or ("", None)
+
+                raw_name = data.get("Name") or "Unknown Server"
+                raw_host = data.get("Host", "") or ""
+                raw_port = data.get("Port", "32400") or "32400"
+
+                lan_ip = ""
+                if isinstance(addr, tuple) and addr:
+                    lan_ip = addr[0] or ""
+
+                # Prefer the LAN IP for direct access; fall back to the
+                # advertised Host (which may be a plex.direct address).
+                host = lan_ip or raw_host
+
+                uri = f"http://{host}:{raw_port}/" if host else ""
+
+                name = raw_name
+                if name == "Unknown Server" and host:
+                    name = f"Plex @ {host}"
+
+                token = data.get("accessToken") or data.get("token")
+
+                servers.append(
+                    {
+                        "name": name,
+                        "host": host,
+                        "port": raw_port,
+                        "uri": uri,
+                        "token": token,
+                    }
+                )
                 
+            logger.info("Plex GDM scan complete: %d server(s) discovered", len(servers))
             self.servers_found.emit(servers)
         except Exception as e:
-            print(f"Plex discovery error: {e}")
+            logger.exception("Plex discovery error")
             self.servers_found.emit([])
 
 
@@ -250,24 +306,53 @@ class PlexServerManagerDialog(QDialog):
         
     def _connect_to_server(self, host, port, server_name=None, token=None):
         """Connect to Plex server and configure Home Users."""
+        # Basic validation before we try anything network-related
+        host = (host or "").strip()
+        port = (port or "").strip() or "32400"
+
+        if not host:
+            QMessageBox.warning(
+                self,
+                "Missing Server Address",
+                "Please enter a Plex server IP or hostname before connecting."
+            )
+            return
+
         try:
             baseurl = f"http://{host}:{port}"
 
             discovered_name = server_name or "Unknown Server"
             resolved_token = token
 
+            # Try a quick connection to validate that the server is reachable and,
+            # when a token is provided, that it is usable. We are intentionally
+            # conservative here: if the probe fails, we surface the error instead
+            # of silently creating a broken server entry.
             try:
-                server = PlexServer(
-                    baseurl,
-                    token=token,
-                    timeout=5,
-                ) if token else PlexServer(baseurl, timeout=5)
+                if token:
+                    server = PlexServer(baseurl, token=token, timeout=5)
+                else:
+                    server = PlexServer(baseurl, timeout=5)
+
                 discovered_name = getattr(server, "friendlyName", discovered_name)
+
+                # If the caller did not supply a token but Plex gives us one
+                # (e.g. from a previously authenticated context), capture it so
+                # that subsequent operations have full access.
                 if not resolved_token:
                     resolved_token = getattr(server, "_token", None)
             except Exception as exc:
-                print(f"Plex quick connect failed for {host}:{port}: {exc}")
+                QMessageBox.critical(
+                    self,
+                    "Plex Connection Failed",
+                    f"Could not reach Plex at {baseurl}.\n\n{exc}\n\n"
+                    "Please verify the IP/port and that the server is running."
+                )
+                return
 
+            # At this point the server responded. We may still not have a token
+            # (guest / PIN-only setups), but the Home User dialog will make that
+            # limitation explicit and guide the user through manual configuration.
             dialog = PlexHomeUserDialog(
                 host,
                 port,
@@ -279,18 +364,18 @@ class PlexServerManagerDialog(QDialog):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 # Reload server list
                 self._load_servers()
-                
+
                 # Clear inputs
                 self.server_ip_input.clear()
                 self.server_token_input.clear()
-                
+
                 QMessageBox.information(
                     self,
                     "Server Added! 🎉",
                     f"Successfully connected to {discovered_name}!\n\n"
                     "This server will now appear in your source dropdown."
                 )
-                
+
         except Exception as e:
             QMessageBox.critical(
                 self,

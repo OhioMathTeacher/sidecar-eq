@@ -6,6 +6,10 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QMessageBox, QProgressDialog
 )
 
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
+
 try:
     from plexapi.server import PlexServer
     PLEX_AVAILABLE = True
@@ -108,29 +112,14 @@ class PlexBrowserDialog(QDialog):
         baseurl = f"http://{host}:{port}"
 
         try:
-            admin_server = PlexServer(baseurl, token=token, timeout=10)
-            if getattr(admin_server, 'friendlyName', None):
-                self.server_display_name = admin_server.friendlyName
+            # Connect to Plex server using admin token
+            # For now, we skip home user switching and just use the admin token directly
+            logger.info(f"Connecting to Plex server at {baseurl} as {self.username}")
+            self.plex = PlexServer(baseurl, token=token, timeout=10)
+            
+            if getattr(self.plex, 'friendlyName', None):
+                self.server_display_name = self.plex.friendlyName
                 self.setWindowTitle(f"Browse Plex: {self.server_display_name}")
-
-            account = admin_server.myPlexAccount()
-            stored_users = {u.get('username'): u for u in self.server_config.get('users', [])}
-            stored_user = stored_users.get(self.username, {})
-            stored_pin = stored_user.get('pin', '')
-
-            plex_user = account.user(self.username)
-            if plex_user is None:
-                raise RuntimeError(f"User '{self.username}' is not part of this Plex Home")
-
-            requires_pin = bool(getattr(plex_user, 'protected', False))
-            if requires_pin and not stored_pin:
-                raise RuntimeError(
-                    f"User '{self.username}' requires a PIN. Update the server configuration with their PIN."
-                )
-
-            user_account = account.switchHomeUser(plex_user, pin=stored_pin or None)
-            user_token = user_account.authenticationToken
-            self.plex = PlexServer(baseurl, token=user_token, timeout=10)
 
             music_sections = [s for s in self.plex.library.sections() if s.type == 'artist']
             if not music_sections:
@@ -192,13 +181,22 @@ class PlexBrowserDialog(QDialog):
         plex_obj = item.data(0, Qt.UserRole)
         
         if plex_obj is None:
+            logger.debug("Double-clicked item has no Plex object attached")
             return
         
+        obj_type = item.text(1)  # "Artist", "Album", or "Track"
+        obj_name = item.text(0)
+        logger.debug(f"Double-clicked {obj_type}: {obj_name}")
+        
         # If it's an artist, load albums
-        if hasattr(plex_obj, 'albums'):
+        if obj_type == "Artist" or hasattr(plex_obj, 'albums'):
             if item.childCount() == 0:  # Not yet loaded
                 try:
-                    for album in plex_obj.albums():
+                    logger.info(f"Loading albums for artist: {obj_name}")
+                    albums = plex_obj.albums()
+                    logger.debug(f"Found {len(albums)} albums for {obj_name}")
+                    
+                    for album in albums:
                         album_item = QTreeWidgetItem(item, [
                             album.title,
                             "Album",
@@ -207,17 +205,23 @@ class PlexBrowserDialog(QDialog):
                         album_item.setData(0, Qt.UserRole, album)
                     
                     item.setExpanded(True)
+                    logger.info(f"Successfully loaded {len(albums)} albums for {obj_name}")
                     
                 except Exception as e:
+                    logger.exception(f"Failed to load albums for {obj_name}")
                     QMessageBox.warning(self, "Error", f"Failed to load albums: {e}")
             else:
                 item.setExpanded(not item.isExpanded())
         
         # If it's an album, load tracks
-        elif hasattr(plex_obj, 'tracks'):
+        elif obj_type == "Album" or hasattr(plex_obj, 'tracks'):
             if item.childCount() == 0:  # Not yet loaded
                 try:
-                    for track in plex_obj.tracks():
+                    logger.info(f"Loading tracks for album: {obj_name}")
+                    tracks = plex_obj.tracks()
+                    logger.debug(f"Found {len(tracks)} tracks for {obj_name}")
+                    
+                    for track in tracks:
                         track_item = QTreeWidgetItem(item, [
                             track.title,
                             "Track",
@@ -227,8 +231,10 @@ class PlexBrowserDialog(QDialog):
                         track_item.setCheckState(0, Qt.Unchecked)  # Make checkable
                     
                     item.setExpanded(True)
+                    logger.info(f"Successfully loaded {len(tracks)} tracks for {obj_name}")
                     
                 except Exception as e:
+                    logger.exception(f"Failed to load tracks for {obj_name}")
                     QMessageBox.warning(self, "Error", f"Failed to load tracks: {e}")
             else:
                 item.setExpanded(not item.isExpanded())
@@ -250,10 +256,10 @@ class PlexBrowserDialog(QDialog):
             item.setHidden(text_lower not in name)
     
     def get_selected_tracks(self):
-        """Get list of selected track URLs.
+        """Get list of selected Plex track objects with metadata.
         
         Returns:
-            List of stream URLs for selected tracks
+            List of dicts with track metadata and stream URL
         """
         selected = []
         
@@ -263,7 +269,59 @@ class PlexBrowserDialog(QDialog):
             if item.checkState(0) == Qt.Checked:
                 plex_obj = item.data(0, Qt.UserRole)
                 if plex_obj and hasattr(plex_obj, 'getStreamURL'):
-                    selected.append(plex_obj.getStreamURL())
+                    try:
+                        # Get DIRECT download URL instead of HLS stream (better Qt compatibility)
+                        # Use media parts to get the actual file instead of transcoded stream
+                        stream_url = None
+                        if hasattr(plex_obj, 'media') and plex_obj.media:
+                            media = plex_obj.media[0]
+                            if hasattr(media, 'parts') and media.parts:
+                                part = media.parts[0]
+                                # Get direct file URL with authentication token
+                                stream_url = plex_obj._server.url(part.key, includeToken=True)
+                                logger.debug(f"Got DIRECT file URL for {plex_obj.title}: {stream_url[:100]}...")
+                        
+                        # Fallback to HLS stream if direct URL not available
+                        if not stream_url:
+                            stream_url = plex_obj.getStreamURL()
+                            logger.debug(f"Using HLS stream URL for {plex_obj.title}: {stream_url[:100]}...")
+                        
+                        if not isinstance(stream_url, str):
+                            logger.error(f"Stream URL is {type(stream_url)} instead of str: {stream_url}")
+                            return
+                        
+                        # Extract comprehensive metadata from Plex track
+                        track_info = {
+                            "path": stream_url,
+                            "stream_url": stream_url,  # CRITICAL: Add stream_url field for queue model
+                            "title": plex_obj.title,
+                            "artist": getattr(plex_obj, 'grandparentTitle', '') or getattr(plex_obj, 'originalTitle', ''),
+                            "album": getattr(plex_obj, 'parentTitle', ''),
+                            "year": getattr(plex_obj, 'year', None),
+                            "duration": getattr(plex_obj, 'duration', 0) / 1000.0 if hasattr(plex_obj, 'duration') else None,  # Plex uses ms
+                            "bitrate": f"{getattr(plex_obj, 'bitrate', 0)} kbps" if hasattr(plex_obj, 'bitrate') else None,
+                            "rating": getattr(plex_obj, 'userRating', 0) or 0,
+                            "source": "plex",
+                            "is_video": False,
+                            "play_count": 0,
+                        }
+                    except Exception as e:
+                        logger.exception(f"Failed to get stream URL for track {plex_obj.title}: {e}")
+                        return
+                    
+                    # Add media info if available
+                    if hasattr(plex_obj, 'media') and plex_obj.media:
+                        media = plex_obj.media[0]
+                        if hasattr(media, 'audioCodec'):
+                            track_info["format"] = media.audioCodec.upper()
+                        if hasattr(media, 'audioChannels'):
+                            track_info["channels"] = media.audioChannels
+                        if hasattr(media, 'parts') and media.parts:
+                            part = media.parts[0]
+                            if hasattr(part, 'container'):
+                                track_info["container"] = part.container.upper()
+                    
+                    selected.append(track_info)
             
             # Check children
             for i in range(item.childCount()):

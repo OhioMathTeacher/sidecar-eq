@@ -848,7 +848,8 @@ class SearchBar(QWidget):
         """
         self.search_input.setText(text)
         if trigger_search:
-            self._on_text_changed(text)
+            # Perform search immediately (skip debounce timer)
+            self._perform_search()
     
     def search_for_track(self, title: str, artist: str = "", album: str = ""):
         """Search for a specific track and show results.

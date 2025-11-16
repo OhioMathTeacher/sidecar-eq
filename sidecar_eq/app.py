@@ -17,6 +17,25 @@ The UI is built using PySide6 (Qt6) and consists of:
 - Bottom status bar with seek slider and time display
 """
 
+"""Sidecar EQ - Educational audio player with thermometer-style EQ interface.
+
+This is the main application module containing the MainWindow class and
+the primary UI logic. The application provides:
+
+- Multi-source playback (local files, YouTube URLs, Plex media servers)
+- 7-band thermometer EQ interface with per-track persistence
+- Background audio analysis (frequency response, tempo, etc.)
+- Queue management with drag-and-drop support
+- Recently played tracks history
+- Save/load playlist functionality
+
+The UI is built using PySide6 (Qt6) and consists of:
+- Top toolbar with playback controls and source selector
+- Central queue table showing tracks
+- Right side panel with volume knob, EQ faders, and recently played
+- Bottom status bar with seek slider and time display
+"""
+
 # Standard library imports
 import json
 import math
@@ -26,6 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 # Third-party imports
+import logging
 from dotenv import load_dotenv
 from plexapi.server import PlexServer
 from PySide6.QtCore import QDateTime, QModelIndex, QObject, QSize, Qt, QThread, QTimer, Signal, QPoint
@@ -57,6 +77,7 @@ from PySide6.QtWidgets import (
 )
 
 # Local imports
+from .logging_config import configure_logging, get_logger
 from . import playlist, store
 from .collapsible_panel import CollapsiblePanel
 from .indexer import LibraryIndexer
@@ -80,6 +101,11 @@ from .workers import BackgroundAnalysisWorker
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".m4v", ".webm", ".wmv", ".3gp"}
 MEDIA_EXTS = AUDIO_EXTS | VIDEO_EXTS
+
+
+# Configure logging early in application startup
+configure_logging()
+logger = get_logger(__name__)
 
 
 class CustomTableHeader(QHeaderView):
@@ -266,6 +292,12 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self._pending_analysis_path = None
         self._user_adjusted_volume = False  # Track manual volume changes
+        
+        # EQ debounce timer to prevent rapid updates
+        self._eq_update_timer = QTimer()
+        self._eq_update_timer.setSingleShot(True)
+        self._eq_update_timer.timeout.connect(self._apply_pending_eq_update)
+        self._pending_eq_values = None
 
         # Library indexer
         try:
@@ -654,7 +686,7 @@ class MainWindow(QMainWindow):
                         search_term = ""
                     
                     if search_term and self.search_bar:
-                        self.search_bar.set_search_text(search_term)
+                        self.search_bar.set_search_text(search_term, trigger_search=True)
                         print(f"[App] Auto-search for: {search_term}")
             else:
                 # Queue is empty - load default track (MLK "I Have a Dream" speech)
@@ -676,7 +708,7 @@ class MainWindow(QMainWindow):
                         
                         # Search for the track title or "MLK"
                         if self.search_bar:
-                            self.search_bar.set_search_text("MLK")
+                            self.search_bar.set_search_text("MLK", trigger_search=True)
                             print("[App] Auto-search for: MLK")
                 else:
                     print(f"[App] Default track not found at: {default_path}")
@@ -1174,18 +1206,136 @@ class MainWindow(QMainWindow):
         eq_main_layout.setContentsMargins(8, 8, 8, 8)
         eq_main_layout.setSpacing(4)
         
-        # === PLAYBACK CONTROLS at top (Rate, Treble Boost, etc.) ===
-        playback_container = QWidget()
-        playback_container.setStyleSheet("background: transparent; border: none;")
-        playback_layout = QVBoxLayout()
-        playback_layout.setContentsMargins(0, 0, 0, 0)
-        playback_layout.setSpacing(2)
+        # === EQ CONTROLS at top (Preset dropdown + Enable/Disable toggle) ===
+        from PySide6.QtWidgets import QComboBox, QPushButton
+        eq_controls_container = QWidget()
+        eq_controls_container.setStyleSheet("background: transparent; border: none;")
+        eq_controls_layout = QVBoxLayout()
+        eq_controls_layout.setContentsMargins(0, 0, 0, 0)
+        eq_controls_layout.setSpacing(6)
         
-        # TODO: Add playback rate control, treble boost, loudness, etc.
-        # Placeholder container for future controls - no labels yet to save vertical space
+        # EQ header with label and enable/disable toggle (matching volume layout)
+        eq_header_layout = QHBoxLayout()
+        eq_header_layout.setContentsMargins(0, 0, 0, 0)
         
-        playback_container.setLayout(playback_layout)
-        eq_main_layout.addWidget(playback_container)
+        eq_label = QLabel("EQUALIZER")
+        eq_label.setAlignment(Qt.AlignLeft)
+        eq_label.setStyleSheet("color: #6699cc; font-size: 9px; font-family: 'Helvetica'; font-weight: bold; background: transparent; border: none;")
+        eq_header_layout.addWidget(eq_label)
+        
+        eq_header_layout.addStretch()
+        
+        # EQ Enable/Disable toggle button
+        self._eq_enabled = True  # Track EQ state
+        self._eq_toggle_btn = QPushButton("ON")
+        self._eq_toggle_btn.setFixedWidth(40)
+        self._eq_toggle_btn.setFixedHeight(18)
+        self._eq_toggle_btn.setCheckable(True)
+        self._eq_toggle_btn.setChecked(True)
+        self._eq_toggle_btn.clicked.connect(self._on_eq_toggle)
+        self._eq_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background: #0d4f8f;
+                color: white;
+                border: 1px solid #4da6ff;
+                border-radius: 2px;
+                font-size: 8px;
+                font-weight: bold;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background: #1a5fa0;
+            }
+            QPushButton:checked {
+                background: #0d4f8f;
+                color: white;
+            }
+            QPushButton:!checked {
+                background: #2a2a2a;
+                color: #808080;
+                border: 1px solid #404040;
+            }
+        """)
+        eq_header_layout.addWidget(self._eq_toggle_btn)
+        
+        eq_controls_layout.addLayout(eq_header_layout)
+        
+        # EQ Preset dropdown (matching volume slider width/style)
+        self._eq_preset_combo = QComboBox()
+        self._eq_preset_combo.addItems([
+            "Flat (No EQ)",
+            "Bass Boost",
+            "Treble Boost",
+            "Loudness",
+            "Rock",
+            "Jazz",
+            "Classical",
+            "Electronic",
+            "Vocal Forward",
+            "Custom"
+        ])
+        self._eq_preset_combo.setCurrentIndex(0)  # Default to Flat
+        self._eq_preset_combo.setFixedHeight(20)
+        self._eq_preset_combo.currentIndexChanged.connect(self._on_eq_preset_changed)
+        
+        if USE_MODERN_UI:
+            system_font = SystemFonts.get_system_font(size=9).family()
+            self._eq_preset_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background: #1a1a1a;
+                    color: #b0b0b0;
+                    border: 1px solid #2a2a2a;
+                    border-radius: 2px;
+                    padding: 2px 6px;
+                    font-family: '{system_font}';
+                    font-size: 9px;
+                }}
+                QComboBox:hover {{
+                    border: 1px solid #4da6ff;
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    border-left: 3px solid transparent;
+                    border-right: 3px solid transparent;
+                    border-top: 4px solid #808080;
+                    margin-right: 6px;
+                }}
+            """)
+        else:
+            self._eq_preset_combo.setStyleSheet("""
+                QComboBox {
+                    background: #1a1a1a;
+                    color: #b0b0b0;
+                    border: 1px solid #2a2a2a;
+                    border-radius: 2px;
+                    padding: 2px 6px;
+                    font-size: 9px;
+                }
+                QComboBox:hover {
+                    border: 1px solid #4da6ff;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+                QComboBox::down-arrow {
+                    image: none;
+                    border-left: 3px solid transparent;
+                    border-right: 3px solid transparent;
+                    border-top: 4px solid #808080;
+                    margin-right: 6px;
+                }
+            """)
+        
+        eq_controls_layout.addWidget(self._eq_preset_combo)
+        
+        eq_controls_container.setLayout(eq_controls_layout)
+        eq_main_layout.addWidget(eq_controls_container)
+        
+        # Add spacing to match volume panel layout
+        eq_main_layout.addSpacing(24)
         
         # EQ sliders container (7 sliders only - no volume)
         from PySide6.QtWidgets import QHBoxLayout as HB, QCheckBox
@@ -1272,8 +1422,10 @@ class MainWindow(QMainWindow):
             # Use BeamSlider for all EQ bands for consistent look
             try:
                 s = BeamSlider()
-                # Connect BeamSlider 0..100 -> -12..12 for label updates
-                s.valueChanged.connect(lambda v, idx=i: self._on_eq_changed_with_label(int(round((v/100.0)*24 - 12)), idx))
+                # Connect for label updates only (no EQ changes during drag)
+                s.valueChanged.connect(lambda v, idx=i: self._on_eq_label_changed(int(round((v/100.0)*24 - 12)), idx))
+                # Apply EQ only when slider is released (prevents crackling)
+                s.sliderReleased.connect(self._on_eq_released)
                 s.setFixedHeight(120)
             except Exception:
                 # Fallback to older QSlider style if BeamSlider import fails
@@ -1281,7 +1433,8 @@ class MainWindow(QMainWindow):
                 s.setRange(-12, 12)
                 s.setValue(0)
                 s.setStyleSheet(slider_css_blue_vu)
-                s.valueChanged.connect(lambda val, idx=i: self._on_eq_changed_with_label(val, idx))
+                s.valueChanged.connect(lambda val, idx=i: self._on_eq_label_changed(val, idx))
+                s.sliderReleased.connect(self._on_eq_released)
                 s.setFixedHeight(120)
             
             # Stack LED meter and slider using QStackedLayout for true overlay
@@ -1934,14 +2087,29 @@ Licensed under AGPL v3</p>
         """Open Plex browser to add tracks from Plex server."""
         from .plex_browser import PlexBrowserDialog
         
-        dialog = PlexBrowserDialog(self)
+        # Load Plex server config from store
+        plex_servers = store.get_record("plex_servers") or []
+        if not plex_servers:
+            QMessageBox.warning(
+                self,
+                "No Plex Server",
+                "No Plex server configured. Please add a Plex server first via Plex → Manage Servers."
+            )
+            return
+        
+        # Use first configured server (TODO: support multiple servers)
+        server_config = plex_servers[0]
+        
+        # Get username from server config (first user)
+        users = server_config.get("users", [])
+        username = users[0].get("username") if users else None
+        
+        dialog = PlexBrowserDialog(self, server_config=server_config, username=username)
         if dialog.exec() == QDialog.Accepted:
             selected_tracks = dialog.get_selected_tracks()
             if selected_tracks:
-                # Add Plex tracks to queue
-                count = 0
-                for track_url in selected_tracks:
-                    count += self.model.add_paths([track_url])
+                # Add Plex tracks to queue with metadata
+                count = self.model.add_plex_tracks(selected_tracks)
                 
                 if self.current_row is None and count > 0:
                     self.table.selectRow(0)
@@ -2607,10 +2775,8 @@ Licensed under AGPL v3</p>
             if result == QDialog.DialogCode.Accepted:
                 selected_tracks = dialog.get_selected_tracks()
                 if selected_tracks:
-                    # Add Plex tracks to queue
-                    count = 0
-                    for track_url in selected_tracks:
-                        count += self.model.add_paths([track_url])
+                    # Add Plex tracks to queue with metadata
+                    count = self.model.add_plex_tracks(selected_tracks)
                     
                     if self.current_row is None and count > 0:
                         self.table.selectRow(0)
@@ -3435,8 +3601,8 @@ Licensed under AGPL v3</p>
         except Exception as e:
             print(f"[App] Failed to toggle LED meters: {e}")
     
-    def _on_eq_changed_with_label(self, val, idx):
-        """Handle EQ slider change and update the corresponding value label."""
+    def _on_eq_label_changed(self, val, idx):
+        """Update the value label only - does not apply EQ (prevents crackling during drag)."""
         # Update the value label for this slider
         if hasattr(self, '_eq_value_labels') and idx < len(self._eq_value_labels):
             # Format: +12, +0, -12
@@ -3444,9 +3610,51 @@ Licensed under AGPL v3</p>
                 self._eq_value_labels[idx].setText(f"+{val}")
             else:
                 self._eq_value_labels[idx].setText(f"{val}")
+    
+    def _on_eq_released(self):
+        """Apply EQ after a short delay when slider is released - prevents crackling.
         
-        # Call the regular EQ changed handler
-        self._on_eq_changed()
+        Uses a timer to debounce rapid EQ changes (e.g., when adjusting multiple sliders).
+        """
+        try:
+            # Get current EQ values and convert BeamSlider 0-100 to dB (-12 to +12)
+            eq_values = []
+            for slider in self._eq_sliders:
+                raw_val = slider.value()
+                # Check if it's a BeamSlider (0-100 range) or QSlider (-12 to 12 range)
+                if hasattr(slider, '__class__') and 'BeamSlider' in slider.__class__.__name__:
+                    # BeamSlider: 0-100 → -12 to +12
+                    db_val = int(round((raw_val / 100.0) * 24 - 12))
+                else:
+                    # QSlider: already in -12 to +12 range
+                    db_val = raw_val
+                eq_values.append(db_val)
+            
+            self._pending_eq_values = eq_values
+            
+            # Switch to "Custom" preset when user manually adjusts sliders
+            if hasattr(self, '_eq_preset_combo'):
+                # Block signals to prevent triggering preset change
+                self._eq_preset_combo.blockSignals(True)
+                self._eq_preset_combo.setCurrentIndex(9)  # "Custom" is last item
+                self._eq_preset_combo.blockSignals(False)
+            
+            # Restart timer (debounces multiple slider releases)
+            self._eq_update_timer.stop()
+            self._eq_update_timer.start(300)  # 300ms delay to allow multiple slider adjustments
+            
+        except Exception as e:
+            print(f"[App] Failed to queue EQ update: {e}")
+    
+    def _apply_pending_eq_update(self):
+        """Apply the pending EQ update (called by timer)."""
+        try:
+            if self._pending_eq_values is not None:
+                self._apply_eq_to_player(self._pending_eq_values)
+                print(f"[App] EQ applied: {self._pending_eq_values} (not saved - click Save button)")
+                self._pending_eq_values = None
+        except Exception as e:
+            print(f"[App] Failed to apply pending EQ: {e}")
     
     def _on_eq_changed(self):
         """Handle EQ slider changes and apply audio effects.
@@ -3467,54 +3675,119 @@ Licensed under AGPL v3</p>
             print(f"[App] Failed to handle EQ change: {e}")
     
     def _apply_eq_to_player(self, eq_values: list):
-        """Apply EQ settings to audio playback."""
+        """Apply EQ settings to audio playback.
+        
+        Args:
+            eq_values: List of dB values from -12 to +12
+        """
         try:
             if not hasattr(self, 'player') or not self.player:
                 return
             
+            # If EQ is disabled, send flat EQ (all zeros)
+            if not self._eq_enabled:
+                eq_values = [0] * 7
+            
+            # Convert dB values (-12 to +12) to slider values (0 to 200)
+            # where 100 = 0dB (flat)
+            # Formula: slider_value = (dB_value + 12) * 200 / 24
+            # Or simpler: slider_value = 100 + (dB_value * 100 / 12)
+            slider_values = []
+            for db_val in eq_values:
+                # Clamp to -12 to +12 range
+                db_val = max(-12, min(12, db_val))
+                # Convert to 0-200 range (100 = 0dB)
+                slider_val = 100 + (db_val * 100 / 12)
+                slider_values.append(int(slider_val))
+            
             # Send EQ values to player
             if hasattr(self.player, 'set_eq_values'):
-                self.player.set_eq_values(eq_values)
-                
-            # Calculate overall volume adjustment based on EQ settings
-            # This is a simplified approach - reduce volume if too many boosts
-            total_boost = sum(max(0, val) for val in eq_values)
-            
-            # Apply a basic volume compensation to prevent clipping
-            volume_compensation = 1.0
-            if total_boost > 30:  # More than 30dB total boost
-                volume_compensation = 0.6  # Significant reduction
-            elif total_boost > 20:  # High boost
-                volume_compensation = 0.75
-            elif total_boost > 10:  # Moderate boost
-                volume_compensation = 0.9
-            
-            # Get current volume setting and apply compensation
-            if hasattr(self, '_volume_slider') and self._volume_slider and self._volume_slider.value() is not None:
-                base_volume = self._volume_slider.value() / 100.0
-                adjusted_volume = base_volume * volume_compensation
-                
-                # Apply to player
-                if hasattr(self.player, 'set_volume'):
-                    self.player.set_volume(adjusted_volume)
-            else:
-                # Default volume if no spinner available
-                if hasattr(self.player, 'set_volume'):
-                    self.player.set_volume(0.7 * volume_compensation)
-                    
-                # Calculate frequency-specific adjustments for user feedback
-                bass_adjustment = eq_values[0] + eq_values[1]  # 60Hz + 150Hz
-                mid_adjustment = eq_values[2] + eq_values[3]   # 400Hz + 1kHz
-                treble_adjustment = eq_values[4] + eq_values[5] + eq_values[6]  # 2.4kHz + 6kHz + 15kHz
-                
-                print(f"[App] EQ Applied - Bass: {bass_adjustment:+.1f}dB, Mid: {mid_adjustment:+.1f}dB, Treble: {treble_adjustment:+.1f}dB")
-                if hasattr(self, '_volume_slider') and self._volume_slider and self._volume_slider.value() is not None:
-                    print(f"[App] Volume compensation: {volume_compensation:.2f} (base: {base_volume:.2f} -> adjusted: {adjusted_volume:.2f})")
+                self.player.set_eq_values(slider_values)
+                if self._eq_enabled:
+                    print(f"[App] EQ applied to player: {eq_values} dB → {slider_values} slider")
                 else:
-                    print(f"[App] Volume compensation: {volume_compensation:.2f} (default volume used)")
-        
+                    print(f"[App] EQ disabled - sending flat EQ")
+                
         except Exception as e:
             print(f"[App] Failed to apply EQ to player: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_eq_toggle(self, checked: bool):
+        """Handle EQ enable/disable toggle."""
+        try:
+            self._eq_enabled = checked
+            self._eq_toggle_btn.setText("ON" if checked else "OFF")
+            
+            # Apply current EQ settings (will be flat if disabled)
+            if hasattr(self, '_eq_sliders'):
+                eq_values = []
+                for slider in self._eq_sliders:
+                    raw_val = slider.value()
+                    if hasattr(slider, '__class__') and 'BeamSlider' in slider.__class__.__name__:
+                        db_val = int(round((raw_val / 100.0) * 24 - 12))
+                    else:
+                        db_val = raw_val
+                    eq_values.append(db_val)
+                self._apply_eq_to_player(eq_values)
+            
+            print(f"[App] EQ {'enabled' if checked else 'disabled'}")
+            
+        except Exception as e:
+            print(f"[App] Failed to toggle EQ: {e}")
+    
+    def _on_eq_preset_changed(self, index: int):
+        """Handle EQ preset selection."""
+        try:
+            preset_name = self._eq_preset_combo.currentText()
+            
+            # Define EQ presets (dB values for 60Hz, 150Hz, 400Hz, 1kHz, 2.4kHz, 6kHz, 15kHz)
+            presets = {
+                "Flat (No EQ)": [0, 0, 0, 0, 0, 0, 0],
+                "Bass Boost": [6, 4, 2, 0, 0, 0, 0],
+                "Treble Boost": [0, 0, 0, 0, 2, 4, 6],
+                "Loudness": [4, 2, 0, 0, 0, 2, 3],  # Boost bass and treble for low volume
+                "Rock": [4, 2, -1, 0, 1, 3, 4],
+                "Jazz": [2, 1, 0, 1, 2, 2, 1],
+                "Classical": [0, 0, 0, 0, 0, 2, 3],
+                "Electronic": [5, 3, 0, 0, 2, 3, 4],
+                "Vocal Forward": [-2, -1, 2, 3, 2, 0, -1],
+                "Custom": None  # Don't change sliders for Custom
+            }
+            
+            eq_values = presets.get(preset_name)
+            
+            if eq_values is not None:
+                # Update sliders to match preset
+                for i, db_val in enumerate(eq_values):
+                    if i < len(self._eq_sliders):
+                        slider = self._eq_sliders[i]
+                        # Convert dB to slider value
+                        if hasattr(slider, '__class__') and 'BeamSlider' in slider.__class__.__name__:
+                            # BeamSlider: -12 to +12 → 0 to 100
+                            slider_val = int(round((db_val + 12) * 100 / 24))
+                        else:
+                            # QSlider: direct dB value
+                            slider_val = db_val
+                        slider.setValue(slider_val)
+                        
+                        # Update label
+                        if i < len(self._eq_value_labels):
+                            if db_val >= 0:
+                                self._eq_value_labels[i].setText(f"+{db_val}")
+                            else:
+                                self._eq_value_labels[i].setText(f"{db_val}")
+                
+                # Apply preset immediately
+                self._apply_eq_to_player(eq_values)
+                print(f"[App] Applied EQ preset: {preset_name} → {eq_values}")
+            else:
+                print(f"[App] Selected Custom preset - sliders unchanged")
+            
+        except Exception as e:
+            print(f"[App] Failed to apply EQ preset: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _increment_play_count(self, path: str):
         """Increment play count for a track using the store module."""
@@ -3668,9 +3941,35 @@ Licensed under AGPL v3</p>
     def _update_metadata_display(self, path: str):
         """Extract and display track + audio file metadata in the toolbar."""
         try:
-            # Handle URLs differently - limited metadata
+            # For streaming URLs (Plex, web), get metadata from queue model instead of file
             if path.startswith(('http://', 'https://')):
-                self.metadata_label.setText("🌐 Streaming • No metadata available")
+                # Get metadata from the current row in the queue
+                if self.current_row is not None and self.current_row < len(self.model._rows):
+                    track_info = self.model._rows[self.current_row]
+                    title = track_info.get('title', 'Unknown')
+                    artist = track_info.get('artist', '')
+                    album = track_info.get('album', '')
+                    source = track_info.get('source', 'streaming')
+                    
+                    # Build display: "Title - Artist • Album" or "Title • Album" or just "Title"
+                    parts = []
+                    if artist:
+                        parts.append(f"♪ {title} - {artist}")
+                    else:
+                        parts.append(f"♪ {title}")
+                    
+                    if album:
+                        parts.append(album)
+                    
+                    # Add source indicator
+                    if source == 'plex':
+                        parts.append("Plex")
+                    else:
+                        parts.append("Streaming")
+                    
+                    self.metadata_label.setText(" • ".join(parts))
+                else:
+                    self.metadata_label.setText("🌐 Streaming • No metadata available")
                 return
             
             file_path = Path(path)

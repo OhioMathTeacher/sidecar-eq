@@ -462,6 +462,51 @@ class QueueModel(QAbstractTableModel):
             added += 1
         return added
 
+    def add_plex_tracks(self, track_infos):
+        """Add Plex tracks with pre-fetched metadata.
+        
+        Args:
+            track_infos: List of dicts with keys: path, title, artist, album, etc.
+        
+        Returns:
+            Number of tracks added
+        """
+        added = 0
+        for track_info in track_infos:
+            path = track_info.get("path")
+            if not path or path in self._paths_set:
+                continue
+            
+            # Use the metadata from Plex
+            row = {
+                "path": path,
+                "stream_url": track_info.get("stream_url"),  # CRITICAL: Preserve stream_url for playback
+                "title": track_info.get("title"),
+                "artist": track_info.get("artist"),
+                "album": track_info.get("album"),
+                "year": track_info.get("year"),
+                "duration": track_info.get("duration"),
+                "bitrate": track_info.get("bitrate"),
+                "format": track_info.get("format", "PLEX"),
+                "rating": track_info.get("rating", 0),
+                "play_count": track_info.get("play_count", 0),
+                "source": "plex",
+                "is_video": False,
+                # Initialize other fields
+                "label": None,
+                "producer": None,
+                "sample_rate": None,
+                "bit_depth": None,
+            }
+            
+            self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
+            self._rows.append(row)
+            self._paths_set.add(path)
+            self.endInsertRows()
+            added += 1
+        
+        return added
+
     def paths(self):
         result = []
         for r in self._rows:

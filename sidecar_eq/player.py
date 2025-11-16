@@ -1,8 +1,11 @@
 from pathlib import Path
+import subprocess
+import threading
 
 from PySide6.QtCore import QObject, Signal, QUrl, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from .audio_engine import AudioEngine
+from .url_cache import URLCache
 
 class Player(QObject):
     # forward AudioEngine's positionChanged/durationChanged signals
@@ -13,10 +16,20 @@ class Player(QObject):
     def __init__(self):
         super().__init__()
         
+        # Track which backend is being used for the CURRENT track
+        self._current_backend = None  # Will be 'engine', 'qmedia', or 'ffplay'
+        
+        # URL cache for Plex streams
+        self._url_cache = URLCache()
+        
+        # ffplay subprocess for Plex URLs (fallback if download fails)
+        self._ffplay_process = None
+        self._ffplay_url = None
+        
         # Use AudioEngine for real EQ support
         try:
             self._engine = AudioEngine()
-            self._use_audio_engine = True
+            self._audio_engine_available = True
             print("[Player] ✅ AudioEngine initialized - Real EQ enabled!")
             
             # Set up callbacks for position/duration updates
@@ -32,23 +45,23 @@ class Player(QObject):
         except Exception as e:
             print(f"[Player] ⚠️  AudioEngine unavailable: {e}")
             print("[Player] Falling back to QMediaPlayer (no EQ)")
-            self._use_audio_engine = False
+            self._audio_engine_available = False
             
-            # Fallback to QMediaPlayer
-            self._audio_output = QAudioOutput()
-            self._player = QMediaPlayer()
-            self._player.setAudioOutput(self._audio_output)
-            
-            # Connect QMediaPlayer signals
-            self._player.positionChanged.connect(self.positionChanged)
-            self._player.durationChanged.connect(self.durationChanged)
-            self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
+        # Always initialize QMediaPlayer (for URLs, fallback, etc.)
+        self._audio_output = QAudioOutput()
+        self._player = QMediaPlayer()
+        self._player.setAudioOutput(self._audio_output)
+        
+        # Connect QMediaPlayer signals
+        self._player.positionChanged.connect(self.positionChanged)
+        self._player.durationChanged.connect(self.durationChanged)
+        self._player.mediaStatusChanged.connect(self.mediaStatusChanged)
+        self._player.errorOccurred.connect(self._on_player_error)
         
         # Set initial volume to 50% to prevent ear damage!
-        if self._use_audio_engine:
+        if self._audio_engine_available:
             self._engine.set_volume(0.5)
-        else:
-            self._audio_output.setVolume(0.5)
+        self._audio_output.setVolume(0.5)
     
     def _on_position_changed(self, position_ms: int):
         """Callback from AudioEngine for position updates."""
@@ -64,32 +77,101 @@ class Player(QObject):
         self._position_timer.stop()
         self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.EndOfMedia)
     
+    def _on_player_error(self, error, error_string):
+        """Handle QMediaPlayer errors."""
+        print(f"[Player] ❌ QMediaPlayer error: {error} - {error_string}")
+    
     def _update_position(self):
         """Update position from AudioEngine via timer."""
-        if self._use_audio_engine and self._engine.is_playing:
+        if self._current_backend == 'engine' and self._engine.is_playing:
             position_ms = self._engine.get_position()
             self.positionChanged.emit(position_ms)
         
     def setSource(self, path: str):
-        """Set the audio source - loads file for AudioEngine."""
+        """Set the audio source - downloads URLs to cache, then loads via AudioEngine."""
         try:
-            if self._use_audio_engine:
-                # Show loading message (file loading can be slow)
-                print(f"[Player] Loading file: {Path(path).name}...")
+            # Stop any existing playback first
+            self._stop_all_backends()
+            
+            # Check if this is an HTTP/HTTPS URL (Plex stream)
+            is_url = path.startswith(('http://', 'https://'))
+            
+            if is_url:
+                # Try to use cached version or download
+                print(f"[Player] Plex stream detected: {path[:60]}...")
+                
+                # Check cache first
+                cached_path = self._url_cache.get_cached_path(path)
+                
+                if cached_path:
+                    # Use cached file with AudioEngine
+                    print(f"[Player] Using cached file: {cached_path.name}")
+                    if self._audio_engine_available:
+                        success = self._engine.load_file(str(cached_path))
+                        if success:
+                            self._current_backend = 'engine'
+                            return True
+                else:
+                    # Download and cache (blocking - could add progress bar later)
+                    print("[Player] Downloading stream to cache...")
+                    cached_path = self._url_cache.download_and_cache(path)
+                    
+                    if cached_path and self._audio_engine_available:
+                        # Load cached file
+                        success = self._engine.load_file(str(cached_path))
+                        if success:
+                            print("[Player] ✅ Stream cached and loaded successfully")
+                            self._current_backend = 'engine'
+                            return True
+                
+                # If download failed or AudioEngine unavailable, fall back to ffplay
+                print("[Player] ⚠️ Falling back to ffplay (no EQ/volume control)")
+                self._ffplay_url = path
+                self._current_backend = 'ffplay'
+                return True
+            
+            # Local file - use AudioEngine directly
+            if self._audio_engine_available:
+                print(f"[Player] Loading local file via AudioEngine: {Path(path).name}...")
                 success = self._engine.load_file(path)
                 if success:
-                    print(f"[Player] ✅ File loaded successfully")
+                    print("[Player] ✅ File loaded successfully")
+                    self._current_backend = 'engine'
                 else:
-                    print(f"[Player] ❌ Failed to load file")
+                    print("[Player] ❌ Failed to load file")
+                    self._current_backend = None
                 return success
             else:
-                # QMediaPlayer loads asynchronously
+                # Fallback to QMediaPlayer for local files if AudioEngine fails
                 url = QUrl.fromLocalFile(path)
+                print(f"[Player] Loading file via QMediaPlayer: {Path(path).name}")
                 self._player.setSource(url)
+                self._current_backend = 'qmedia'
                 return True
         except Exception as e:
             print(f"[Player] Error loading file: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _stop_all_backends(self):
+        """Stop all playback backends to ensure clean state."""
+        try:
+            if self._audio_engine_available:
+                self._engine.stop()
+                self._position_timer.stop()
+        except Exception:
+            pass
+        
+        try:
+            self._stop_ffplay()
+        except Exception:
+            pass
+        
+        try:
+            self._player.stop()
+        except Exception:
+            pass
     
     def _get_plex_stream_url(self, plex_path: str) -> QUrl:
         """Generate fresh Plex stream URL from plex:// path.
@@ -145,31 +227,81 @@ class Player(QObject):
         """Load & play a new file in one call."""
         self.setSource(path)
         
-        if self._use_audio_engine:
+        if self._current_backend == 'engine':
             self._engine.play()
             self._position_timer.start()  # Start position updates
-        else:
+        elif self._current_backend == 'ffplay':
+            # Use ffplay for Plex URLs
+            self._start_ffplay()
+        elif self._current_backend == 'qmedia':
             self._player.play()
+    
+    def _start_ffplay(self):
+        """Start ffplay subprocess for Plex URL playback."""
+        try:
+            # Kill any existing ffplay process
+            self._stop_ffplay()
+            
+            # Start ffplay in background
+            # -nodisp: no video display
+            # -autoexit: exit when done
+            # -loglevel quiet: suppress ffplay output
+            print(f"[Player] Starting ffplay for: {self._ffplay_url[:80]}...")
+            self._ffplay_process = subprocess.Popen(
+                ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', self._ffplay_url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print("[Player] ✅ ffplay started successfully")
+        except Exception as e:
+            print(f"[Player] ❌ Failed to start ffplay: {e}")
+            self._current_backend = None
+    
+    def _stop_ffplay(self):
+        """Stop ffplay subprocess."""
+        if self._ffplay_process:
+            try:
+                self._ffplay_process.terminate()
+                try:
+                    self._ffplay_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._ffplay_process.kill()
+                    self._ffplay_process.wait()
+            except Exception as e:
+                print(f"[Player] Warning: Error stopping ffplay: {e}")
+                try:
+                    self._ffplay_process.kill()
+                except Exception:
+                    pass
+            self._ffplay_process = None
 
     def pause(self):
-        if self._use_audio_engine:
+        if self._current_backend == 'engine':
             self._engine.pause()
             self._position_timer.stop()
-        else:
+        elif self._current_backend == 'ffplay':
+            # ffplay doesn't support pause via subprocess - just stop it
+            self._stop_ffplay()
+        elif self._current_backend == 'qmedia':
             self._player.pause()
 
     def stop(self):
-        if self._use_audio_engine:
+        if self._current_backend == 'engine':
             self._engine.stop()
             self._position_timer.stop()
-        else:
+        elif self._current_backend == 'ffplay':
+            self._stop_ffplay()
+        elif self._current_backend == 'qmedia':
             self._player.stop()
 
     def is_playing(self):
-        if self._use_audio_engine:
+        if self._current_backend == 'engine':
             return self._engine.is_playing and not self._engine.is_paused
-        else:
+        elif self._current_backend == 'ffplay':
+            return self._ffplay_process is not None and self._ffplay_process.poll() is None
+        elif self._current_backend == 'qmedia':
             return self._player.playbackState() == QMediaPlayer.PlayingState
+        return False
 
     def set_volume(self, v: float):
         """Set volume. Accepts 0.0-1.0 or 0-100."""
@@ -181,25 +313,32 @@ class Player(QObject):
                 v = max(0.0, min(100.0, v)) / 100.0
             v = max(0.0, min(1.0, v))
             
-            if self._use_audio_engine:
+            if self._current_backend == 'engine':
                 self._engine.set_volume(v)
-            else:
+            elif self._current_backend == 'ffplay':
+                # ffplay doesn't support volume control via subprocess
+                print("[Player] ⚠️  Volume control not available for ffplay")
+            elif self._current_backend == 'qmedia':
                 self._audio_output.setVolume(v)
         except Exception:
             pass
 
     def volume(self) -> float:
-        if self._use_audio_engine:
+        if self._current_backend == 'engine':
             return float(self._engine.volume)
-        else:
+        elif self._current_backend == 'qmedia':
             return float(self._audio_output.volume())
+        return 0.5
 
     def set_position(self, ms: int):
         """Seek to position in milliseconds."""
         try:
-            if self._use_audio_engine:
+            if self._current_backend == 'engine':
                 self._engine.seek(int(ms))
-            else:
+            elif self._current_backend == 'ffplay':
+                # ffplay doesn't support seeking via subprocess
+                print("[Player] ⚠️  Seeking not available for ffplay")
+            elif self._current_backend == 'qmedia':
                 self._player.setPosition(int(ms))
         except Exception:
             pass
@@ -214,7 +353,7 @@ class Player(QObject):
             # Store EQ values
             self._eq_values = eq_values
             
-            if self._use_audio_engine:
+            if self._current_backend == 'engine':
                 # Apply REAL EQ! 🎉
                 if len(eq_values) >= 7:
                     for band_index, slider_value in enumerate(eq_values[:7]):
@@ -225,6 +364,7 @@ class Player(QObject):
                     print(f"[Player] ✅ Real EQ applied: {eq_values[:7]}")
             else:
                 # QMediaPlayer fallback - just log for now
+                print("[Player] ⚠️ EQ not available for streamed sources (using QMediaPlayer)")
                 print(f"[Player] ⚠️  EQ not available (using QMediaPlayer): {eq_values}")
                 
         except Exception as e:
