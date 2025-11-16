@@ -772,17 +772,42 @@ class MainWindow(QMainWindow):
             print(f"[App] Error in _on_table_play: {e}")
             pass
     def _build_status_bar(self):
-        """Status bar for messages only (waveform now in split panel)."""
+        """Status bar with repeat button."""
         sb = self.statusBar()
         sb.setSizeGripEnabled(False)  # Disable resize grip (window is fixed size)
+        
+        # Repeat button (toggle)
+        self._repeat_enabled = False
+        self._repeat_btn = QPushButton("🔁 Repeat: Off")
+        self._repeat_btn.setCheckable(True)
+        self._repeat_btn.setFixedHeight(20)
+        self._repeat_btn.clicked.connect(self._toggle_repeat)
+        self._repeat_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #808080;
+                border: 1px solid #404040;
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                border: 1px solid #4d88ff;
+            }
+            QPushButton:checked {
+                background: #0d4f8f;
+                color: white;
+                border: 1px solid #4da6ff;
+            }
+        """)
+        sb.addPermanentWidget(self._repeat_btn)
+        
         sb.showMessage("Ready")
 
 
     def _wire_signals(self):
-        # play-end → next track
-        self.player.mediaStatusChanged.connect(
-            lambda st: st == QMediaPlayer.EndOfMedia and self.on_next()
-        )
+        # play-end → next track (or repeat if enabled)
+        self.player.mediaStatusChanged.connect(self._on_media_status_changed)
         # wire duration/position to waveform and labels
         def _on_duration(dur):
             try:
@@ -974,13 +999,12 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QComboBox
         self._layout_preset_combo = QComboBox()
         self._layout_preset_combo.addItems([
-            "All Panels",      # NEW: Show everything
             "Queue + EQ",
             "Queue Only",
             "EQ Only",
             "Search & Queue"
         ])
-        self._layout_preset_combo.setCurrentIndex(0)  # Default to All Panels
+        self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
         self._layout_preset_combo.setToolTip("Select layout preset")
         self._layout_preset_combo.currentIndexChanged.connect(self._on_layout_preset_changed)
         
@@ -1038,77 +1062,6 @@ class MainWindow(QMainWindow):
             """)
         
         tb.addWidget(self._layout_preset_combo)
-        tb.addSeparator()
-        
-        btn_font_size = 10
-        btn_padding = "4px 12px"
-        
-        self._save_both_btn = QPushButton("Save EQ and Vol")
-        self._save_both_btn.setToolTip("Save both EQ and volume for this track")
-        
-        # Apply styling to button
-        if USE_MODERN_UI:
-            system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
-            self._save_both_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {ModernColors.ACCENT};
-                    border: 1px solid {ModernColors.ACCENT};
-                    border-radius: 3px;
-                    padding: {btn_padding};
-                    font-family: '{system_font}';
-                    font-size: {btn_font_size}px;
-                    font-weight: 600;
-                    min-width: 100px;
-                }}
-                QPushButton:hover {{
-                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.1)};
-                    border: 1px solid {ModernColors.ACCENT_HOVER};
-                }}
-                QPushButton:pressed {{
-                    background: {ModernColors.with_opacity(ModernColors.ACCENT, 0.2)};
-                }}
-                QPushButton:disabled {{
-                    color: {ModernColors.TEXT_QUATERNARY};
-                    border: 1px solid {ModernColors.SEPARATOR};
-                }}
-            """)
-        else:
-            self._save_both_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: #4d88ff;
-                    border: 1px solid #4d88ff;
-                    border-radius: 3px;
-                    padding: {btn_padding};
-                    font-size: {btn_font_size}px;
-                    font-weight: 600;
-                    min-width: 100px;
-                }}
-                QPushButton:hover {{
-                    background: rgba(77, 136, 255, 0.1);
-                    border: 1px solid #6699ff;
-                }}
-                QPushButton:pressed {{
-                    background: rgba(77, 136, 255, 0.2);
-                }}
-                QPushButton:disabled {{
-                    color: #666666;
-                    border: 1px solid #3a3a3a;
-                }}
-            """)
-        self._save_both_btn.setEnabled(False)
-        
-        # Connect button click
-        self._save_both_btn.clicked.connect(self._on_save_both_clicked)
-        
-        # Timer for save confirmation messages
-        self._save_feedback_timer = QTimer()
-        self._save_feedback_timer.setSingleShot(True)
-        self._save_feedback_timer.timeout.connect(self._reset_save_buttons_text)
-        
-        # Add button to toolbar
-        tb.addWidget(self._save_both_btn)
         
     print("[SidecarEQ] Toolbar ready")
 
@@ -1587,6 +1540,15 @@ class MainWindow(QMainWindow):
         act_next.setShortcut(QKeySequence.MoveToNextWord)
         act_next.triggered.connect(self.on_next)
         m_play.addAction(act_next)
+
+        m_play.addSeparator()
+        
+        act_repeat = QAction("Repeat Current Track", self)
+        act_repeat.setCheckable(True)
+        act_repeat.setChecked(False)
+        act_repeat.triggered.connect(self.on_repeat_toggle)
+        m_play.addAction(act_repeat)
+        self._repeat_action = act_repeat
 
         # View menu (EQ Opacity + Master Volume)
         from PySide6.QtGui import QActionGroup
@@ -2091,6 +2053,21 @@ Licensed under AGPL v3</p>
             self._play_row(0)
             return
         self._play_row(self.current_row + 1)
+
+    def on_repeat_toggle(self):
+        """Toggle repeat mode on/off."""
+        self._repeat_mode = not self._repeat_mode
+        status = "ON" if self._repeat_mode else "OFF"
+        print(f"[App] Repeat mode: {status}")
+        self._status_label.setText(f"🔁 Repeat: {status}")
+        
+        # Update repeat button visual state
+        if hasattr(self, '_repeat_btn'):
+            self._repeat_btn.setActive(self._repeat_mode)
+        
+        # Update menu action checked state
+        if hasattr(self, '_repeat_action'):
+            self._repeat_action.setChecked(self._repeat_mode)
 
     def on_add_based_on_source(self):
         # v1.0.0: Local files only (Plex/Web deferred to v2.0.0)
@@ -4006,6 +3983,19 @@ Licensed under AGPL v3</p>
         # Update waveform with time info
         if hasattr(self, 'waveform'):
             self.waveform.setDuration(dur_ms)
+
+    def _on_media_status_changed(self, status):
+        """Handle media status changes, including repeat mode."""
+        from PySide6.QtMultimedia import QMediaPlayer
+        
+        if status == QMediaPlayer.EndOfMedia:
+            if self._repeat_mode:
+                # Repeat current track
+                print(f"[App] Repeat mode: replaying track {self.current_row}")
+                self._play_row(self.current_row)
+            else:
+                # Play next track
+                self.on_next()
 
     # --- EQ persistence helpers ---
     def _eq_store_path(self):
