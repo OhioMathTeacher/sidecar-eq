@@ -701,6 +701,10 @@ class MainWindow(QMainWindow):
                     count = self.model.add_paths([str(default_path)])
                     if count > 0:
                         print(f"[App] Added default track to queue: {default_path}")
+                        
+                        # Auto-add to library
+                        self._auto_add_to_library([str(default_path)])
+                        
                         # Select it
                         first_index = self.model.index(0, 2)
                         self.table.setCurrentIndex(first_index)
@@ -970,12 +974,13 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QComboBox
         self._layout_preset_combo = QComboBox()
         self._layout_preset_combo.addItems([
-            "Full View",
+            "All Panels",      # NEW: Show everything
+            "Queue + EQ",
             "Queue Only",
             "EQ Only",
             "Search & Queue"
         ])
-        self._layout_preset_combo.setCurrentIndex(0)  # Default to Full View
+        self._layout_preset_combo.setCurrentIndex(0)  # Default to All Panels
         self._layout_preset_combo.setToolTip("Select layout preset")
         self._layout_preset_combo.currentIndexChanged.connect(self._on_layout_preset_changed)
         
@@ -1713,9 +1718,15 @@ class MainWindow(QMainWindow):
 
             # Layout preset behavior
             remember = bool(prefs.get("remember_layout", True))
-            default_layout = prefs.get("default_layout_preset", "full_view")
-            if not remember and default_layout in ("full_view", "queue_only", "eq_only", "search_only"):
+            default_layout = prefs.get("default_layout_preset", "queue_eq")
+            # Map old "full_view" to new "queue_eq"
+            if default_layout == "full_view":
+                default_layout = "queue_eq"
+            if not remember and default_layout in ("queue_eq", "queue_only", "eq_only", "search_only"):
                 self._apply_layout_preset(default_layout)
+            else:
+                # Always apply default layout on startup for consistency
+                self._apply_layout_preset("queue_eq")
 
             # Rack Mode at startup (experimental)
             rack_on = bool(prefs.get("rack_mode_startup", False))
@@ -1901,6 +1912,30 @@ Licensed under AGPL v3</p>
                 }}
             """)
     
+    def _auto_save_settings_for_current_track(self):
+        """Automatically save EQ and volume settings when switching tracks or ending playback."""
+        if self.current_row is None:
+            return
+        
+        try:
+            paths = self.model.paths()
+            if not paths or self.current_row >= len(paths):
+                return
+            
+            # Save both volume and EQ silently (no UI feedback)
+            # Save volume
+            volume = self._volume_slider.value() if hasattr(self, '_volume_slider') else 75
+            path = paths[self.current_row]
+            if path:
+                store.set_record(f"volume:{path}", volume)
+            
+            # Save EQ
+            self.save_eq_for_current_track()
+            
+            print(f"[App] Auto-saved EQ and volume for: {Path(path).stem} (Vol: {volume}%)")
+        except Exception as e:
+            print(f"[App] Auto-save failed: {e}")
+    
     def _reset_save_buttons_text(self):
         """Reset save button back to normal state after confirmation."""
         self._save_both_btn.setText("Save EQ and Vol")
@@ -2048,6 +2083,10 @@ Licensed under AGPL v3</p>
         self._update_led_meters_playback(False)
 
     def on_next(self):
+        # Auto-save settings before moving to next track
+        if self.current_row is not None:
+            self._auto_save_settings_for_current_track()
+        
         if self.current_row is None:
             self._play_row(0)
             return
@@ -2066,6 +2105,9 @@ Licensed under AGPL v3</p>
             if self.current_row is None and count > 0:
                 self.table.selectRow(0)
             self.statusBar().showMessage(f"Added {count} files")
+            
+            # Auto-add to library (only local audio files, not videos or URLs)
+            self._auto_add_to_library(files)
 
     def on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Add Folder")
@@ -2082,6 +2124,9 @@ Licensed under AGPL v3</p>
         if self.current_row is None and count > 0:
             self.table.selectRow(0)
         self.statusBar().showMessage(f"Added {count} files from folder")
+        
+        # Auto-add to library (only local audio files, not videos or URLs)
+        self._auto_add_to_library(paths)
 
     def on_browse_plex(self):
         """Open Plex browser to add tracks from Plex server."""
@@ -2941,6 +2986,59 @@ Licensed under AGPL v3</p>
         """Silently refresh metadata on startup without status message."""
         self._refresh_metadata_internal(show_message=False)
     
+    def _auto_add_to_library(self, paths: list):
+        """Automatically add local audio files to the library when added to queue.
+        
+        This ensures the library stays in sync with tracks in the queue, making
+        search and play count tracking work seamlessly.
+        
+        Args:
+            paths: List of file paths to add to library
+        """
+        if not self.indexer:
+            return
+        
+        # Filter to only local audio files (skip videos, URLs, etc.)
+        from .video_extractor import is_video_file
+        audio_paths = []
+        for path in paths:
+            # Skip URLs
+            if isinstance(path, str) and path.startswith(('http://', 'https://')):
+                continue
+            
+            # Skip videos
+            try:
+                if is_video_file(path):
+                    continue
+            except Exception:
+                pass
+            
+            # Check if it's an audio file
+            file_ext = Path(path).suffix.lower()
+            if file_ext in AUDIO_EXTS:
+                audio_paths.append(path)
+        
+        if not audio_paths:
+            return
+        
+        # Add to library in background
+        added = 0
+        for path in audio_paths:
+            try:
+                song = self.indexer._create_song(Path(path))
+                if song:
+                    self.indexer.library.add_song(song)
+                    added += 1
+            except Exception as e:
+                print(f"[App] Failed to add {path} to library: {e}")
+        
+        if added > 0:
+            self.indexer.save_library()
+            # Update search bar with new library
+            if self.search_bar:
+                self.search_bar.set_library(self.indexer.get_library())
+            print(f"[App] 📚 Auto-added {added} track(s) to library")
+    
     def _on_metadata_lookup(self, row: int):
         """Lookup and update metadata for a specific track from online sources.
         
@@ -3207,6 +3305,10 @@ Licensed under AGPL v3</p>
         if not paths or row is None or row < 0 or row >= len(paths):
             return
         
+        # Auto-save settings for previous track before switching
+        if self.current_row is not None and self.current_row != row:
+            self._auto_save_settings_for_current_track()
+        
         # Cancel any running background analysis since we're switching tracks
         if self._analysis_worker and self._analysis_worker.isRunning():
             self._analysis_worker.stop_analysis()
@@ -3317,15 +3419,17 @@ Licensed under AGPL v3</p>
             # If user manually saved settings, ALWAYS use those (skip analysis)
             if has_manual_save and saved_data:
                 print(f"[App] ✓ Loading manually saved settings for: {Path(identifier).stem}")
-                self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
+                preset_name = saved_data.get('eq_preset')
+                self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)), preset_name)
             elif source_type in ('plex', 'url'):
                 # Streaming sources: just load saved settings (no analysis possible)
                 if saved_data:
-                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
+                    preset_name = saved_data.get('eq_preset')
+                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)), preset_name)
                     print(f"[App] Loaded saved EQ settings for streaming source: {Path(identifier).stem}")
                 else:
                     # Reset to flat EQ for new streaming sources
-                    self._apply_eq_settings([0]*7)
+                    self._apply_eq_settings([0]*7, "Flat (No EQ)")
                     print(f"[App] No saved settings for streaming source: {Path(identifier).stem} - using flat EQ")
             elif source_type == 'video':
                 # Video files: analyze extracted audio but use original video path as identifier
@@ -3333,22 +3437,24 @@ Licensed under AGPL v3</p>
                 eq_data = self._get_or_analyze_eq(playback_url)  # Analyze the extracted audio file
                 if eq_data:
                     # Save settings using video file path as key for consistency
-                    self._apply_eq_settings(eq_data.get('gains_db', [0]*7))
+                    preset_name = eq_data.get('eq_preset')
+                    self._apply_eq_settings(eq_data.get('gains_db', [0]*7), preset_name)
                     # Store analysis under video file identifier
                     self._store_analysis_for_video(identifier, eq_data)
                 else:
                     # Reset to flat EQ if no analysis available
-                    self._apply_eq_settings([0]*7)
+                    self._apply_eq_settings([0]*7, "Flat (No EQ)")
             else:
                 # Regular local audio files: Load saved settings or analyze
                 if saved_data:
                     # Use saved settings (from previous analysis or manual save)
-                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)))
+                    preset_name = saved_data.get('eq_preset')
+                    self._apply_eq_settings(saved_data.get('gains_db', saved_data.get('eq_settings', [0]*7)), preset_name)
                     print(f"[App] ✓ Loaded saved EQ for: {Path(identifier).stem}")
                 else:
                     # No saved settings - start background analysis
                     print(f"[App] No saved settings - starting analysis for: {Path(identifier).stem}")
-                    self._apply_eq_settings([0]*7)  # Flat EQ while analyzing
+                    self._apply_eq_settings([0]*7, "Flat (No EQ)")  # Flat EQ while analyzing
                     self._start_background_analysis(identifier)
             
             # Apply saved volume for ALL source types (not just local files)
@@ -3417,7 +3523,9 @@ Licensed under AGPL v3</p>
                 # Apply EQ settings
                 eq_data = analysis_result.get('eq_data', {})
                 if eq_data:
-                    self._apply_eq_settings(eq_data)
+                    gains_db = eq_data.get('gains_db', [0]*7)
+                    # Analysis doesn't set a preset - it's custom based on audio content
+                    self._apply_eq_settings(gains_db, "Custom")
                 
                 # Apply volume suggestion ONLY if user hasn't manually adjusted it
                 if not self._user_adjusted_volume:
@@ -3497,11 +3605,12 @@ Licensed under AGPL v3</p>
         except Exception as e:
             print(f"[App] Error saving volume: {e}")
     
-    def _apply_eq_settings(self, gains_db: list):
+    def _apply_eq_settings(self, gains_db: list, preset_name: str = None):
         """Apply EQ settings to the sliders and update value labels.
         
         Args:
             gains_db: List of EQ gains in dB (-12 to +12 range)
+            preset_name: Optional preset name to restore in the dropdown
         """
         try:
             if hasattr(self, '_eq_sliders') and len(gains_db) >= len(self._eq_sliders):
@@ -3525,6 +3634,23 @@ Licensed under AGPL v3</p>
                                 self._eq_value_labels[i].setText(f"+{db_value}")
                             else:
                                 self._eq_value_labels[i].setText(f"{db_value}")
+            
+            # Restore preset dropdown if preset_name provided
+            if preset_name and hasattr(self, '_eq_preset_combo'):
+                # Find the preset in the combo box
+                index = self._eq_preset_combo.findText(preset_name)
+                if index >= 0:
+                    self._eq_preset_combo.blockSignals(True)
+                    self._eq_preset_combo.setCurrentIndex(index)
+                    self._eq_preset_combo.blockSignals(False)
+                    print(f"[App] ✓ Restored EQ preset: {preset_name}")
+                else:
+                    # Preset not found - set to "Custom"
+                    custom_index = self._eq_preset_combo.findText("Custom")
+                    if custom_index >= 0:
+                        self._eq_preset_combo.blockSignals(True)
+                        self._eq_preset_combo.setCurrentIndex(custom_index)
+                        self._eq_preset_combo.blockSignals(False)
         except Exception as e:
             print(f"[App] Failed to apply EQ: {e}")
     
@@ -3907,6 +4033,9 @@ Licensed under AGPL v3</p>
         # Get current volume
         current_volume = self._volume_slider.value() if hasattr(self, '_volume_slider') else 75
         
+        # Get current preset name
+        current_preset = self._eq_preset_combo.currentText() if hasattr(self, '_eq_preset_combo') else "Custom"
+        
         # Load existing data (to preserve analysis results)
         p = self._eq_store_path()
         data = {}
@@ -3924,6 +4053,7 @@ Licensed under AGPL v3</p>
             'eq_settings': eq_values,
             'gains_db': eq_values,  # Also store as gains_db for compatibility
             'suggested_volume': current_volume,
+            'eq_preset': current_preset,  # Save the preset name
             'analysis_data': existing_track_data.get('analysis_data', {}),  # Preserve existing analysis
             'analyzed_at': existing_track_data.get('analyzed_at', str(QDateTime.currentDateTime().toString())),
             'play_count': existing_track_data.get('play_count', 0),
@@ -4288,16 +4418,40 @@ Licensed under AGPL v3</p>
         """Apply a layout preset (workflow mode).
         
         Args:
-            preset: One of "full_view", "queue_only", "eq_only", "search_only"
-                - full_view: All panels visible (search, queue, EQ)
+            preset: One of "all_panels", "queue_eq", "queue_only", "eq_only", "search_only"
+                - all_panels: All three panels visible (default)
+                - queue_eq: Queue and EQ panels only (no search)
                 - queue_only: Just the queue panel
                 - eq_only: Just the EQ panel
-                - search_only: Search & queue panels (Full View minus EQ)
+                - search_only: Search & queue panels (no EQ)
         """
         try:
             # Remember current preset for stretch logic nuances
             self._current_layout_preset = preset
-            if preset == "queue_only":
+            if preset == "all_panels":
+                # All Panels - Show everything
+                self.queue_panel.set_collapsed(False)
+                self.eq_panel.set_collapsed(False)
+                self.search_panel.set_collapsed(False)
+                self.queue_panel.setVisible(True)
+                self.eq_panel.setVisible(True)
+                self.search_panel.setVisible(True)
+                try:
+                    # All panels size to content
+                    self.queue_panel.lock_content_height(True)
+                    self.queue_panel.set_content_stretch(False)
+                    self.eq_panel.lock_content_height(True)
+                    self.eq_panel.set_content_stretch(False)
+                    self.search_panel.lock_content_height(True)
+                    self.search_panel.set_content_stretch(False)
+                    # Reset alignment to default
+                    if hasattr(self, '_central_layout'):
+                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
+                except Exception:
+                    pass
+                print("[App] Applied All Panels layout (queue + EQ + search)")
+                
+            elif preset == "queue_only":
                 # Queue Only
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(True)
@@ -4365,28 +4519,47 @@ Licensed under AGPL v3</p>
                     
                 print("[App] Applied Search & Queue layout (search + mini queue)")
                 
-            elif preset == "full_view":
-                # Full View - all panels visible
+            elif preset == "queue_eq":
+                # Queue + EQ View - Queue and EQ panels only (no search)
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(False)
-                self.search_panel.set_collapsed(False)
+                self.search_panel.set_collapsed(True)
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(True)
-                self.search_panel.setVisible(True)
+                self.search_panel.setVisible(False)
                 try:
-                    # Default: panels size to content unless last-visible stretch logic changes it
+                    # Panels size to content
                     self.queue_panel.lock_content_height(True)
                     self.queue_panel.set_content_stretch(False)
                     self.eq_panel.lock_content_height(True)
                     self.eq_panel.set_content_stretch(False)
-                    self.search_panel.lock_content_height(True)
-                    self.search_panel.set_content_stretch(False)
-                    # Reset alignment to default for full view
+                    # Reset alignment to default
                     if hasattr(self, '_central_layout'):
                         self._central_layout.setAlignment(Qt.AlignmentFlag(0))
                 except Exception:
                     pass
-                print("[App] Applied Full View layout")
+                print("[App] Applied Queue + EQ layout (no search)")
+            
+            else:
+                # Legacy "full_view" - map to queue_eq for backwards compatibility
+                self.queue_panel.set_collapsed(False)
+                self.eq_panel.set_collapsed(False)
+                self.search_panel.set_collapsed(True)
+                self.queue_panel.setVisible(True)
+                self.eq_panel.setVisible(True)
+                self.search_panel.setVisible(False)
+                try:
+                    # Panels size to content
+                    self.queue_panel.lock_content_height(True)
+                    self.queue_panel.set_content_stretch(False)
+                    self.eq_panel.lock_content_height(True)
+                    self.eq_panel.set_content_stretch(False)
+                    # Reset alignment to default
+                    if hasattr(self, '_central_layout'):
+                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
+                except Exception:
+                    pass
+                print("[App] Applied legacy full_view as Queue + EQ layout")
             
             # Update stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
@@ -4560,9 +4733,9 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
         
         Args:
-            index: 0=Full View, 1=Queue Only, 2=EQ Only, 3=Search & Queue
+            index: 0=All Panels, 1=Queue + EQ, 2=Queue Only, 3=EQ Only, 4=Search & Queue
         """
-        presets = ["full_view", "queue_only", "eq_only", "search_only"]
+        presets = ["all_panels", "queue_eq", "queue_only", "eq_only", "search_only"]
         if 0 <= index < len(presets):
             self._apply_layout_preset(presets[index])
     

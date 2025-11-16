@@ -347,6 +347,15 @@ class SearchBar(QWidget):
             library: Library instance with hierarchical song organization
         """
         self.library = library
+        
+        # Debug: Print library stats
+        if library:
+            artist_count = len(library.artists)
+            total_songs = sum(artist.song_count for artist in library.artists.values())
+            print(f"[SearchBar] Library set: {artist_count} artists, {total_songs} songs")
+        else:
+            print("[SearchBar] Warning: Library is None!")
+        
         self._update_autocomplete()
     
     def perform_initial_search(self):
@@ -361,18 +370,8 @@ class SearchBar(QWidget):
         first_artist = sorted(self.library.artists.keys())[0]
         
         # Set the search text and trigger search
-        self.set_search_text(first_artist)
+        self.set_search_text(first_artist, trigger_search=True)
     
-    def set_search_text(self, text: str):
-        """Set the search text programmatically and trigger search.
-        
-        Args:
-            text: Search query to set
-        """
-        self.search_input.setText(text)
-        # Immediately trigger search (bypass debounce timer)
-        self._perform_search()
-        
     def _on_text_changed(self, text: str):
         """Handle search input text changes with debouncing.
         
@@ -390,6 +389,8 @@ class SearchBar(QWidget):
         """Execute the search and display categorized results."""
         query = self.search_input.text().strip()
         
+        print(f"[SearchBar] _perform_search called with query: '{query}'")
+        
         if not query:
             self.results_scroll_area.hide()
             self.welcome_panel.show()
@@ -400,10 +401,13 @@ class SearchBar(QWidget):
         
         if not self.library:
             # No library loaded yet - show helpful message instead of welcome
+            print("[SearchBar] ERROR: No library available for search!")
             self.results_scroll_area.hide()
             self._update_welcome_panel_for_no_library()
             self.welcome_panel.show()
             return
+        
+        print(f"[SearchBar] Library has {len(self.library.artists)} artists")
             
         # Clear all category lists
         for category_widget in self.category_lists.values():
@@ -416,7 +420,10 @@ class SearchBar(QWidget):
         albums = results.get('albums', [])
         songs = results.get('songs', [])
         
+        print(f"[SearchBar] Search results: {len(artists)} artists, {len(albums)} albums, {len(songs)} songs")
+        
         if not artists and not albums and not songs:
+            print("[SearchBar] No results found - hiding results area")
             self.results_scroll_area.hide()
             self.welcome_panel.show()
             return
@@ -431,6 +438,7 @@ class SearchBar(QWidget):
         self.welcome_panel.hide()
         self.results_scroll_area.show()
         
+        print(f"[SearchBar] Results displayed - scroll area shown")
         print(f"[SearchBar] Found {len(artists)} artists, {len(albums)} albums, {len(songs)} songs for '{query}'")
     
     def _populate_top_plays_from_songs(self, songs: List[Song]):
@@ -524,12 +532,16 @@ class SearchBar(QWidget):
             text: Input text
             
         Returns:
-            True if it's a command pattern (WORD ...)
+            True if it's a known command keyword
         """
+        # Only treat as command if it starts with a known command keyword
         words = text.split()
-        if words and words[0].isupper() and len(words[0]) > 1:
-            return True
-        return False
+        if not words:
+            return False
+            
+        first_word = words[0].upper()
+        known_commands = {'HELP', 'PLAYLIST', 'EQ'}
+        return first_word in known_commands
         
     def _show_command_hint(self, text: str):
         """Show hint about command syntax.
