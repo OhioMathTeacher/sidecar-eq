@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build standalone executable for Sidecar EQ using PyInstaller
-# This is simpler than AppImage and works well for local use
+# Build standalone directory bundle for Sidecar EQ using PyInstaller
+# This creates a directory with all dependencies (easier to debug than onefile)
 
 set -e  # Exit on error
 
-echo "Building SidecarEQ standalone executable..."
+echo "Building SidecarEQ standalone directory bundle..."
 
 # Check if PyInstaller is installed
 if ! command -v pyinstaller &> /dev/null; then
@@ -14,22 +14,19 @@ fi
 
 # Clean previous builds
 echo "Cleaning previous builds..."
-rm -rf build dist *.spec
+rm -rf build dist_dir *.spec
 
-# Determine path separator (: on Linux/Mac, ; on Windows)
-PATH_SEP=":"
-
-# Build with PyInstaller
+# Build with PyInstaller (directory mode for easier debugging)
 echo "Running PyInstaller..."
 .venv/bin/pyinstaller \
     --name SidecarEQ \
     --windowed \
-    --onefile \
+    --onedir \
     --icon=icons/app_icon.png \
-    --add-data "icons${PATH_SEP}icons" \
-    --add-data "assets${PATH_SEP}assets" \
-    --add-data "examples${PATH_SEP}examples" \
-    --add-data "sidecar_eq/MLKDream_64kb.mp3${PATH_SEP}sidecar_eq" \
+    --add-data "icons:icons" \
+    --add-data "assets:assets" \
+    --add-data "examples:examples" \
+    --add-data "sidecar_eq/MLKDream_64kb.mp3:sidecar_eq" \
     --hidden-import PySide6.QtCore \
     --hidden-import PySide6.QtWidgets \
     --hidden-import PySide6.QtGui \
@@ -50,16 +47,18 @@ echo "Running PyInstaller..."
     --collect-all yt_dlp \
     --collect-submodules sidecar_eq \
     --paths . \
+    --distpath dist_dir \
     run_sidecar.py
 
 echo ""
 echo "✓ Build complete!"
-echo "Executable location: dist/SidecarEQ"
+echo "Executable location: dist_dir/SidecarEQ/SidecarEQ"
 echo ""
 echo "To run:"
-echo "  ./dist/SidecarEQ"
+echo "  ./dist_dir/SidecarEQ/SidecarEQ"
 echo ""
-echo "To install system-wide (optional):"
-echo "  sudo cp dist/SidecarEQ /usr/local/bin/"
-echo "  sudo cp icons/app_icon.png /usr/share/pixmaps/sidecareq.png"
+echo "To create a launcher script:"
+echo "  echo '#!/bin/bash' > sidecar-eq"
+echo "  echo 'cd $(dirname \$0)/dist_dir/SidecarEQ && ./SidecarEQ' >> sidecar-eq"
+echo "  chmod +x sidecar-eq"
 echo ""

@@ -2,6 +2,8 @@
 
 # Standard library imports
 import math
+import sys
+import os
 from pathlib import Path
 
 # Third-party imports
@@ -10,6 +12,18 @@ from PySide6.QtGui import QIcon, QKeyEvent, QPainter, QPen, QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableView
 from .beam_slider import BeamSlider
 from .led_meter import LEDMeter
+
+
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # Running in normal Python environment
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    
+    return os.path.join(base_path, relative_path)
 
 
 class QueueTableView(QTableView):
@@ -149,9 +163,10 @@ class IconButton(QPushButton):
             parent: Parent widget, defaults to None.
         """
         super().__init__(parent)
-        self.icon_default = QIcon(icon_default)
-        self.icon_hover = QIcon(icon_hover)
-        self.icon_pressed = QIcon(icon_pressed)
+        # Use resource path helper for PyInstaller compatibility
+        self.icon_default = QIcon(get_resource_path(icon_default))
+        self.icon_hover = QIcon(get_resource_path(icon_hover))
+        self.icon_pressed = QIcon(get_resource_path(icon_pressed))
         self.setIcon(self.icon_default)
         self.setIconSize(QSize(32, 32))
         self.setFlat(True)
@@ -740,3 +755,16 @@ class WaveformProgress(QLabel):
         painter.drawText(text_x, text_y, time_text)
 
         painter.end()
+
+
+# Export all public classes and functions
+__all__ = [
+    'get_resource_path',
+    'QueueTableView',
+    'IconButton',
+    'KnobWidget',
+    'SnapKnobWidget',
+    'WaveformProgress',
+    'BeamSlider',
+    'LEDMeter',
+]
