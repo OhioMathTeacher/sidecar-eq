@@ -51,11 +51,26 @@ def get_tracks_for_playlist(rating_key):
     # Make sure rating_key is int (sometimes you get string IDs)
     playlist = plex.fetchItem(int(rating_key))
     tracks = playlist.items()
-    return [{
-        "title": t.title,
-        "artist": t.grandparentTitle if hasattr(t, 'grandparentTitle') else "",
-        "album": t.parentTitle if hasattr(t, 'parentTitle') else "",
-        "stream_url": t.getStreamURL(),  # <-- this works even if file path is not local
-        "source": "plex"
-    } for t in tracks]
+    prefer_flac = os.getenv("PLEX_PREFER_FLAC", "0") in ("1", "true", "True", "yes", "YES")
+    result = []
+    for t in tracks:
+        stream_url = None
+        if prefer_flac:
+            try:
+                stream_url = t.getStreamURL(audioCodec='flac', audioContainer='flac')
+            except Exception:
+                stream_url = None
+        if not stream_url:
+            try:
+                stream_url = t.getStreamURL()
+            except Exception:
+                stream_url = None
+        result.append({
+            "title": t.title,
+            "artist": t.grandparentTitle if hasattr(t, 'grandparentTitle') else "",
+            "album": t.parentTitle if hasattr(t, 'parentTitle') else "",
+            "stream_url": stream_url,
+            "source": "plex"
+        })
+    return result
 

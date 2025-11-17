@@ -125,6 +125,126 @@
 				"-m",
 				"sidecar_eq.app"
 			]
+		},
+		{
+			"label": "Lint with Ruff",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"ruff",
+				"check",
+				"sidecar_eq",
+				"tests"
+			]
+		},
+		{
+			"label": "Type Check with mypy",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"mypy",
+				"sidecar_eq"
+			]
+		},
+		{
+			"label": "Run All Tests",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"tests",
+				"-v"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Lint with Ruff",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"ruff",
+				"check",
+				"sidecar_eq",
+				"tests"
+			]
+		},
+		{
+			"label": "Type Check with mypy",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"mypy",
+				"sidecar_eq"
+			]
+		},
+		{
+			"label": "Run Smoke Test",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"tests/smoke_test.py"
+			]
+		},
+		{
+			"label": "Lint with Ruff",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"ruff",
+				"check",
+				"sidecar_eq",
+				"tests"
+			]
+		},
+		{
+			"label": "Type Check with mypy",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"mypy",
+				"sidecar_eq"
+			]
+		},
+		{
+			"label": "Lint with Ruff",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"ruff",
+				"check",
+				"sidecar_eq",
+				"tests"
+			]
+		},
+		{
+			"label": "Type Check with mypy",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"mypy",
+				"sidecar_eq"
+			]
+		},
+		{
+			"label": "Run All Tests",
+			"type": "shell",
+			"command": "/home/todd/sidecar-eq/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"tests",
+				"-v"
+			],
+			"group": "test"
 		}
 	]
 }

@@ -1,6 +1,6 @@
 from pathlib import Path
+import shutil
 import subprocess
-import threading
 
 from PySide6.QtCore import QObject, Signal, QUrl, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -111,6 +111,18 @@ class Player(QObject):
                         if success:
                             self._current_backend = 'engine'
                             return True
+                        else:
+                            print("[Player] ❌ AudioEngine failed to load cached stream; attempting fallbacks…")
+                            # Fall back to ffplay if available, else QMediaPlayer URL playback
+                            if shutil.which('ffplay'):
+                                self._ffplay_url = path
+                                self._current_backend = 'ffplay'
+                                return True
+                            else:
+                                print("[Player] ⚠️ ffplay not found on PATH, trying QMediaPlayer for URL…")
+                                self._player.setSource(QUrl(path))
+                                self._current_backend = 'qmedia'
+                                return True
                 else:
                     # Download and cache (blocking - could add progress bar later)
                     print("[Player] Downloading stream to cache...")
@@ -123,12 +135,29 @@ class Player(QObject):
                             print("[Player] ✅ Stream cached and loaded successfully")
                             self._current_backend = 'engine'
                             return True
+                        else:
+                            print("[Player] ❌ AudioEngine failed to load downloaded stream; attempting fallbacks…")
+                            if shutil.which('ffplay'):
+                                self._ffplay_url = path
+                                self._current_backend = 'ffplay'
+                                return True
+                            else:
+                                print("[Player] ⚠️ ffplay not found on PATH, trying QMediaPlayer for URL…")
+                                self._player.setSource(QUrl(path))
+                                self._current_backend = 'qmedia'
+                                return True
                 
                 # If download failed or AudioEngine unavailable, fall back to ffplay
                 print("[Player] ⚠️ Falling back to ffplay (no EQ/volume control)")
-                self._ffplay_url = path
-                self._current_backend = 'ffplay'
-                return True
+                if shutil.which('ffplay'):
+                    self._ffplay_url = path
+                    self._current_backend = 'ffplay'
+                    return True
+                else:
+                    print("[Player] ⚠️ ffplay not found on PATH, trying QMediaPlayer for URL…")
+                    self._player.setSource(QUrl(path))
+                    self._current_backend = 'qmedia'
+                    return True
             
             # Local file - use AudioEngine directly
             if self._audio_engine_available:
@@ -226,14 +255,46 @@ class Player(QObject):
     def play(self, path: str):
         """Load & play a new file in one call."""
         self.setSource(path)
-        
+
+        # Start only the selected backend and ensure others are stopped
         if self._current_backend == 'engine':
+            # Extra safety: stop any alternate backends before play
+            try:
+                self._stop_ffplay()
+            except Exception:
+                pass
+            try:
+                self._player.stop()
+            except Exception:
+                pass
             self._engine.play()
             self._position_timer.start()  # Start position updates
         elif self._current_backend == 'ffplay':
+            # Ensure QMediaPlayer and AudioEngine are not active
+            try:
+                if self._audio_engine_available:
+                    self._engine.stop()
+                    self._position_timer.stop()
+            except Exception:
+                pass
+            try:
+                self._player.stop()
+            except Exception:
+                pass
             # Use ffplay for Plex URLs
             self._start_ffplay()
         elif self._current_backend == 'qmedia':
+            # Ensure ffplay and AudioEngine are not active
+            try:
+                self._stop_ffplay()
+            except Exception:
+                pass
+            try:
+                if self._audio_engine_available:
+                    self._engine.stop()
+                    self._position_timer.stop()
+            except Exception:
+                pass
             self._player.play()
     
     def _start_ffplay(self):
@@ -242,6 +303,16 @@ class Player(QObject):
             # Kill any existing ffplay process
             self._stop_ffplay()
             
+            if not self._ffplay_url:
+                print("[Player] ❌ No URL set for ffplay")
+                return
+
+            # Ensure ffplay is available
+            if not shutil.which('ffplay'):
+                print("[Player] ❌ ffplay not found in PATH; cannot play streamed URL")
+                self._current_backend = None
+                return
+
             # Start ffplay in background
             # -nodisp: no video display
             # -autoexit: exit when done

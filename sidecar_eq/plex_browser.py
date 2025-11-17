@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from .logging_config import get_logger
+import os
 
 logger = get_logger(__name__)
 
@@ -96,7 +97,8 @@ class PlexBrowserDialog(QDialog):
         token = self.server_config.get('token')
 
         if not host or not token:
-            self.status_label.setText("❌ Missing Plex server details. Reconfigure this server in settings.")
+            self.status_label.setText("❌ Missing Plex server details.")
+            self._show_token_help_dialog()
             return
 
         if not self.username:
@@ -262,6 +264,7 @@ class PlexBrowserDialog(QDialog):
             List of dicts with track metadata and stream URL
         """
         selected = []
+        prefer_flac = os.getenv("PLEX_PREFER_FLAC", "0") in ("1", "true", "True", "yes", "YES")
         
         def check_item(item):
             """Recursively check item and children."""
@@ -273,17 +276,31 @@ class PlexBrowserDialog(QDialog):
                         # Get DIRECT download URL instead of HLS stream (better Qt compatibility)
                         # Use media parts to get the actual file instead of transcoded stream
                         stream_url = None
+                        # Prefer FLAC transcode when requested
+                        if prefer_flac:
+                            try:
+                                stream_url = plex_obj.getStreamURL(audioCodec='flac', audioContainer='flac')
+                                logger.debug(f"Using FLAC transcode stream for {plex_obj.title}: {str(stream_url)[:100]}...")
+                            except Exception as _e:
+                                logger.debug(f"FLAC transcode not available for {plex_obj.title}, falling back: {_e}")
                         if hasattr(plex_obj, 'media') and plex_obj.media:
                             media = plex_obj.media[0]
                             if hasattr(media, 'parts') and media.parts:
                                 part = media.parts[0]
                                 # Get direct file URL with authentication token
-                                stream_url = plex_obj._server.url(part.key, includeToken=True)
+                                if not stream_url:
+                                    stream_url = plex_obj._server.url(part.key, includeToken=True)
                                 logger.debug(f"Got DIRECT file URL for {plex_obj.title}: {stream_url[:100]}...")
                         
                         # Fallback to HLS stream if direct URL not available
                         if not stream_url:
-                            stream_url = plex_obj.getStreamURL()
+                            if prefer_flac:
+                                try:
+                                    stream_url = plex_obj.getStreamURL(audioCodec='flac', audioContainer='flac')
+                                except Exception:
+                                    stream_url = plex_obj.getStreamURL()
+                            else:
+                                stream_url = plex_obj.getStreamURL()
                             logger.debug(f"Using HLS stream URL for {plex_obj.title}: {stream_url[:100]}...")
                         
                         if not isinstance(stream_url, str):
@@ -332,3 +349,33 @@ class PlexBrowserDialog(QDialog):
             check_item(self.tree.topLevelItem(i))
         
         return selected
+
+    def _show_token_help_dialog(self):
+        """Show helpful dialog explaining how to get Plex token and configure server."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle("Plex Server Configuration Required")
+        msg.setText("🔑 Plex Token Required")
+        msg.setInformativeText(
+            "To browse and play music from Plex, you need to configure your server with a valid token.\n\n"
+            "The easiest way to get your Plex token:\n"
+            "  1. Sign in to plex.tv in your browser\n"
+            "  2. Visit: https://plex.tv/devices.xml\n"
+            "  3. Find your token in the XML response\n\n"
+            "Click 'Configure Server' below to open the Plex Server Manager and enter your token."
+        )
+
+        # Add Configure button
+        configure_btn = msg.addButton("Configure Server", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+
+        msg.exec()
+
+        # If user clicked Configure, open the Plex Account Manager
+        if msg.clickedButton() == configure_btn:
+            # Close this dialog and signal parent to open manager
+            self.reject()
+            # Try to get parent app and open manager
+            parent = self.parent()
+            if parent and hasattr(parent, '_open_plex_account_manager'):
+                parent._open_plex_account_manager()  # type: ignore

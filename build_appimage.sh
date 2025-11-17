@@ -11,6 +11,30 @@ APP_NAME="SidecarEQ"
 APP_DIR="AppDir"
 PYTHON_VERSION="3.11"
 
+# Read version from pyproject.toml
+APP_VERSION=$(grep -E '^version\s*=\s*"' pyproject.toml | head -n1 | sed -E 's/[^\"]*"([^"]+)".*/\1/')
+if [ -z "$APP_VERSION" ]; then
+    APP_VERSION="0.0.0"
+fi
+
+# Detect architecture for correct appimagetool and output naming
+UNAME_ARCH=$(uname -m)
+case "$UNAME_ARCH" in
+    x86_64|amd64)
+        APPIMAGE_ARCH="x86_64"
+        ;;
+    aarch64|arm64)
+        APPIMAGE_ARCH="aarch64"
+        ;;
+    armv7l)
+        APPIMAGE_ARCH="armhf"
+        ;;
+    *)
+        echo "⚠️  Unknown architecture '$UNAME_ARCH', defaulting to x86_64"
+        APPIMAGE_ARCH="x86_64"
+        ;;
+esac
+
 # Clean previous build
 echo "📦 Cleaning previous build..."
 rm -rf "$APP_DIR" *.AppImage
@@ -63,9 +87,9 @@ EOF
 
 chmod +x "$APP_DIR/usr/bin/sidecar-eq"
 
-# Create .desktop file
+# Create .desktop file (both in AppDir root and usr/share to satisfy appimagetool)
 echo "🖼️ Creating desktop entry..."
-cat > "$APP_DIR/usr/share/applications/sidecar-eq.desktop" << EOF
+cat > "$APP_DIR/sidecar-eq.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Sidecar EQ
@@ -75,6 +99,10 @@ Icon=sidecar-eq
 Categories=AudioVideo;Audio;Player;
 Terminal=false
 EOF
+
+# Also install to usr/share/applications for completeness
+mkdir -p "$APP_DIR/usr/share/applications"
+cp "$APP_DIR/sidecar-eq.desktop" "$APP_DIR/usr/share/applications/sidecar-eq.desktop"
 
 # Create AppRun
 echo "⚙️ Creating AppRun..."
@@ -109,27 +137,30 @@ fi
 # Copy icon to required locations
 cp "$APP_DIR/sidecar-eq.png" "$APP_DIR/.DirIcon" 2>/dev/null || true
 
-# Download appimagetool if not present
-if [ ! -f "appimagetool-x86_64.AppImage" ]; then
-    echo "📥 Downloading appimagetool..."
-    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-    chmod +x appimagetool-x86_64.AppImage
+# Download appimagetool for this architecture if not present
+APPIMAGETOOL="appimagetool-${APPIMAGE_ARCH}.AppImage"
+if [ ! -f "$APPIMAGETOOL" ]; then
+    echo "📥 Downloading appimagetool for $APPIMAGE_ARCH..."
+    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/${APPIMAGETOOL}"
+    chmod +x "$APPIMAGETOOL"
 fi
 
 # Build AppImage
-echo "🔨 Building AppImage..."
-ARCH=x86_64 ./appimagetool-x86_64.AppImage "$APP_DIR" "SidecarEQ-x86_64.AppImage"
+echo "🔨 Building AppImage (arch=$APPIMAGE_ARCH, version=$APP_VERSION)..."
+# Use extract-and-run to avoid FUSE requirement in restricted environments
+OUTPUT_NAME="${APP_NAME}-${APP_VERSION}-${APPIMAGE_ARCH}.AppImage"
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$APPIMAGE_ARCH" ./$APPIMAGETOOL "$APP_DIR" "$OUTPUT_NAME"
 
 # Make it executable
-chmod +x "SidecarEQ-x86_64.AppImage"
+chmod +x "$OUTPUT_NAME"
 
 echo ""
 echo "✅ Build complete!"
-echo "📦 AppImage created: SidecarEQ-x86_64.AppImage"
+echo "📦 AppImage created: $OUTPUT_NAME"
 echo ""
 echo "To run:"
-echo "  ./SidecarEQ-x86_64.AppImage"
+echo "  ./$OUTPUT_NAME"
 echo ""
 echo "To install system-wide (optional):"
-echo "  sudo mv SidecarEQ-x86_64.AppImage /usr/local/bin/sidecar-eq"
+echo "  sudo mv $OUTPUT_NAME /usr/local/bin/sidecar-eq"
 echo "  sudo chmod +x /usr/local/bin/sidecar-eq"

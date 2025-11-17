@@ -1,6 +1,6 @@
 [project]
 name = "sidecar-eq"
-version = "1.2.0"
+version = "1.2.1"
 description = "Educational audio player with thermometer-style EQ interface for music analysis and per-track customization."
 readme = "README.md"
 requires-python = ">=3.10"

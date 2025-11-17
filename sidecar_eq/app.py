@@ -73,6 +73,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QTableView,
     QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -90,7 +91,6 @@ from .player import Player
 from .queue_model import QueueModel
 from .plex_helpers import get_playlist_titles, get_tracks_for_playlist
 from .scrolling_label import ScrollingLabel
-from .search import SearchBar
 from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
 from .settings_panel import SettingsDialog
@@ -306,20 +306,8 @@ class MainWindow(QMainWindow):
             print(f"[SidecarEQ] Indexer failed: {e}")
             self.indexer = None
 
-        # Search bar
-        try:
-            self.search_bar = SearchBar()
-            self.search_bar.result_selected.connect(self._on_search_result_selected)
-            self.search_bar.command_entered.connect(self._on_command_entered)
-            # Connect to library
-            if self.indexer:
-                self.search_bar.set_library(self.indexer.get_library())
-                # Automatically perform initial search with first artist
-                self.search_bar.perform_initial_search()
-        except Exception as e:
-            print(f"[SidecarEQ] Search bar failed: {e}")
-            self.search_bar = None
-
+        # Artist info panel will be created in UI setup - no search bar needed
+        
         # Model / table
         try:
             self.model = QueueModel()
@@ -452,12 +440,14 @@ class MainWindow(QMainWindow):
             self.eq_panel = CollapsiblePanel("EQ & Waveform")
             central_layout.addWidget(self.eq_panel, stretch=0)  # Dynamic stretch applied later
             
-            # Panel 3: Search (collapsible, accordion style)
-            self.search_panel = CollapsiblePanel("Artist Information & Search")
-            if self.search_bar:
-                self.search_bar.setMinimumHeight(250)
-                self.search_panel.set_content(self.search_bar)
-                self.search_panel.lock_content_height(True)
+            # Panel 3: Now Playing Artist Info (collapsible, accordion style)
+            self.search_panel = CollapsiblePanel("Now Playing")
+            
+            # Create the artist info display
+            self.artist_info_widget = self._create_artist_info_display()
+            self.search_panel.set_content(self.artist_info_widget)
+            self.search_panel.lock_content_height(False)  # Allow expansion for rich content
+            
             central_layout.addWidget(self.search_panel, stretch=0)  # Dynamic stretch applied later
             
             # Store central layout for dynamic stretch updates
@@ -1002,7 +992,7 @@ class MainWindow(QMainWindow):
             "Queue + EQ",
             "Queue Only",
             "EQ Only",
-            "Search & Queue"
+            "Artist Info"
         ])
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
         self._layout_preset_combo.setToolTip("Select layout preset")
@@ -1065,6 +1055,362 @@ class MainWindow(QMainWindow):
         
     print("[SidecarEQ] Toolbar ready")
 
+    
+    
+    def _create_artist_info_display(self):
+        """Create the Now Playing artist info display widget with rich metadata."""
+        try:
+            from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+            from PySide6.QtCore import Qt
+            
+            # Main scrollable container (parent to self to avoid floating windows)
+            scroll = QScrollArea(self)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setStyleSheet("""
+                QScrollArea {
+                    background: transparent;
+                    border: none;
+                }
+            """)
+            
+            container = QWidget(scroll)
+            container.setStyleSheet("""
+                QWidget {
+                    background: #1e1e1e;
+                }
+            """)
+            
+            layout = QVBoxLayout()
+            layout.setSpacing(16)
+            layout.setContentsMargins(16, 16, 16, 16)
+            
+            # --- ARTIST NAME (large, bold) ---
+            self.artist_name_label = QLabel("No track playing")
+            self.artist_name_label.setStyleSheet("""
+                QLabel {
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #ffffff;
+                    padding: 8px 0;
+                }
+            """)
+            layout.addWidget(self.artist_name_label)
+            
+            # --- CURRENT TRACK INFO ---
+            current_track_frame = QFrame(container)
+            current_track_frame.setFrameShape(QFrame.StyledPanel)
+            current_track_frame.setStyleSheet("""
+                QFrame {
+                    background: #2a2a2a;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    padding: 12px;
+                }
+            """)
+            current_track_layout = QVBoxLayout()
+            current_track_layout.setSpacing(6)
+            
+            track_header = QLabel("NOW PLAYING", current_track_frame)
+            track_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
+            current_track_layout.addWidget(track_header)
+            
+            self.track_title_label = QLabel("", current_track_frame)
+            self.track_title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #fff;")
+            self.track_title_label.setWordWrap(True)
+            current_track_layout.addWidget(self.track_title_label)
+            
+            self.track_info_label = QLabel("", current_track_frame)
+            self.track_info_label.setStyleSheet("font-size: 12px; color: #aaa;")
+            self.track_info_label.setWordWrap(True)
+            current_track_layout.addWidget(self.track_info_label)
+            
+            current_track_frame.setLayout(current_track_layout)
+            layout.addWidget(current_track_frame)
+            
+            # --- ALBUM INFO ---
+            album_frame = QFrame(container)
+            album_frame.setFrameShape(QFrame.StyledPanel)
+            album_frame.setStyleSheet("""
+                QFrame {
+                    background: #2a2a2a;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    padding: 12px;
+                }
+            """)
+            album_layout = QVBoxLayout()
+            album_layout.setSpacing(6)
+            
+            album_header = QLabel("ALBUM INFO", album_frame)
+            album_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
+            album_layout.addWidget(album_header)
+            
+            self.album_info_label = QLabel("", album_frame)
+            self.album_info_label.setStyleSheet("font-size: 13px; color: #ccc;")
+            self.album_info_label.setWordWrap(True)
+            album_layout.addWidget(self.album_info_label)
+            
+            album_frame.setLayout(album_layout)
+            self.album_frame = album_frame
+            layout.addWidget(album_frame)
+            
+            # --- TOP TRACKS BY THIS ARTIST ---
+            top_tracks_frame = QFrame(container)
+            top_tracks_frame.setFrameShape(QFrame.StyledPanel)
+            top_tracks_frame.setStyleSheet("""
+                QFrame {
+                    background: #2a2a2a;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    padding: 12px;
+                }
+            """)
+            top_tracks_layout = QVBoxLayout()
+            top_tracks_layout.setSpacing(6)
+            
+            top_tracks_header = QLabel("TOP TRACKS FROM LIBRARY", top_tracks_frame)
+            top_tracks_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
+            top_tracks_layout.addWidget(top_tracks_header)
+            
+            self.top_tracks_list = QListWidget(top_tracks_frame)
+            self.top_tracks_list.setStyleSheet("""
+                QListWidget {
+                    background: #1e1e1e;
+                    border: 1px solid #333;
+                    border-radius: 4px;
+                    color: #fff;
+                    font-size: 12px;
+                    padding: 4px;
+                }
+                QListWidget::item {
+                    padding: 6px;
+                    border-radius: 3px;
+                }
+                QListWidget::item:hover {
+                    background: #3a3a3a;
+                }
+                QListWidget::item:selected {
+                    background: #4a9eff;
+                }
+            """)
+            self.top_tracks_list.setMaximumHeight(150)
+            self.top_tracks_list.itemDoubleClicked.connect(self._on_top_track_double_clicked)
+            top_tracks_layout.addWidget(self.top_tracks_list)
+            
+            top_tracks_frame.setLayout(top_tracks_layout)
+            self.top_tracks_frame = top_tracks_frame
+            layout.addWidget(top_tracks_frame)
+            
+            # Add stretch to push content to top
+            layout.addStretch()
+            
+            container.setLayout(layout)
+            scroll.setWidget(container)
+            scroll.setVisible(False)  # Hidden until a track plays
+            
+            return scroll
+        except Exception as e:
+            print(f"ERROR in _create_artist_info_display: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return a dummy widget so the app doesn't crash
+            dummy = QScrollArea(self)
+            return dummy
+    
+    def _on_top_track_double_clicked(self, item):
+        """Handle double-click on a top track to add it to the queue."""
+        track_path = item.data(Qt.UserRole)
+        if track_path:
+            self.model.add_path(track_path)
+            self.statusBar().showMessage(f"Added to queue: {Path(track_path).name}", 2000)
+    
+    def _update_artist_info_display(self, path):
+        """Update the Now Playing artist info display with rich metadata from the currently playing track.
+        
+        Args:
+            path: Path to the track file or URL
+        """
+        if not hasattr(self, 'artist_info_widget') or not self.artist_info_widget:
+            return
+        
+        try:
+            # Get metadata for the track
+            track_info = None
+            if hasattr(self, 'model') and self.model and self.current_row is not None:
+                if self.current_row < len(self.model._rows):
+                    track_info = self.model._rows[self.current_row]
+            
+            if not track_info:
+                # Hide if no track info available
+                self.artist_info_widget.setVisible(False)
+                return
+            
+            # Extract metadata
+            artist = track_info.get('artist', 'Unknown Artist')
+            album = track_info.get('album', '')
+            title = track_info.get('title', Path(path).stem if isinstance(path, str) else 'Unknown')
+            year = track_info.get('year', '')
+            
+            # Update artist name (large header)
+            self.artist_name_label.setText(artist)
+            
+            # Update current track info
+            self.track_title_label.setText(title)
+            
+            track_details = []
+            if album:
+                track_details.append(f"from <b>{album}</b>")
+            if year:
+                track_details.append(f"({year})")
+            self.track_info_label.setText(" ".join(track_details) if track_details else "")
+            
+            # Update album info section
+            album_info_parts = []
+            if album:
+                album_info_parts.append(f"<b>Album:</b> {album}")
+            if year:
+                album_info_parts.append(f"<b>Year:</b> {year}")
+            
+            # Try to get more album metadata if available
+            if track_info.get('album_artist'):
+                album_artist = track_info.get('album_artist')
+                if album_artist != artist:
+                    album_info_parts.append(f"<b>Album Artist:</b> {album_artist}")
+            
+            if album_info_parts:
+                self.album_info_label.setText("<br>".join(album_info_parts))
+                self.album_frame.setVisible(True)
+            else:
+                self.album_frame.setVisible(False)
+            
+            # Query library for top tracks by this artist
+            self._populate_top_tracks(artist)
+            
+            # Show the display
+            self.artist_info_widget.setVisible(True)
+            
+        except Exception as e:
+            print(f"[App] Failed to update artist info display: {e}")
+            import traceback
+            traceback.print_exc()
+            self.artist_info_widget.setVisible(False)
+    
+    def _populate_top_tracks(self, artist):
+        """Query library and populate top tracks by the given artist.
+        
+        Args:
+            artist: Artist name to query
+        """
+        try:
+            self.top_tracks_list.clear()
+            
+            if not artist or artist == 'Unknown Artist':
+                self.top_tracks_frame.setVisible(False)
+                return
+            
+            # Query the library for tracks by this artist
+            if not hasattr(self, 'indexer') or not self.indexer:
+                self.top_tracks_frame.setVisible(False)
+                return
+            
+            library = self.indexer.get_library()
+            if not library:
+                self.top_tracks_frame.setVisible(False)
+                return
+            
+            # Get all tracks by this artist
+            artist_tracks = []
+            for track_path, track_data in library.items():
+                if track_data.get('artist', '').lower() == artist.lower():
+                    artist_tracks.append({
+                        'path': track_path,
+                        'title': track_data.get('title', Path(track_path).stem),
+                        'album': track_data.get('album', ''),
+                        'play_count': track_data.get('play_count', 0)
+                    })
+            
+            if not artist_tracks:
+                self.top_tracks_frame.setVisible(False)
+                return
+            
+            # Sort by play count (descending) and take top 5
+            artist_tracks.sort(key=lambda x: x['play_count'], reverse=True)
+            top_5 = artist_tracks[:5]
+            
+            # Populate the list
+            for track in top_5:
+                play_count = track['play_count']
+                title = track['title']
+                album = track['album']
+                
+                # Format: "Title - Album (12 plays)"
+                display_text = title
+                if album:
+                    display_text += f" • {album}"
+                if play_count > 0:
+                    display_text += f" ({play_count} plays)"
+                
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.UserRole, track['path'])  # Store path for double-click
+                item.setToolTip(f"Double-click to add to queue\n{track['path']}")
+                self.top_tracks_list.addItem(item)
+            
+            self.top_tracks_frame.setVisible(True)
+            
+        except Exception as e:
+            print(f"[App] Failed to populate top tracks: {e}")
+            import traceback
+            traceback.print_exc()
+            self.top_tracks_frame.setVisible(False)
+    
+    def _create_artist_info_display(self):
+        """Create the artist info display widget that shows currently playing artist info."""
+        from PySide6.QtWidgets import QFrame, QLabel
+        from PySide6.QtCore import Qt
+        
+        container = QFrame()
+        container.setFrameShape(QFrame.StyledPanel)
+        container.setStyleSheet("""
+            QFrame {
+                background: #2a2a2a;
+                border: 1px solid #444;
+                border-radius: 6px;
+                padding: 12px;
+            }
+        """)
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Artist name (large, bold)
+        self.artist_name_label = QLabel("No track playing")
+        self.artist_name_label.setStyleSheet("""
+            QLabel {
+                font-size: 18px;
+                font-weight: bold;
+                color: #ffffff;
+            }
+        """)
+        layout.addWidget(self.artist_name_label)
+        
+        # Album & track info
+        self.track_info_label = QLabel("")
+        self.track_info_label.setStyleSheet("""
+            QLabel {
+                font-size: 12px;
+                color: #aaa;
+            }
+        """)
+        self.track_info_label.setWordWrap(True)
+        layout.addWidget(self.track_info_label)
+        
+        container.setLayout(layout)
+        container.setVisible(False)  # Hidden until a track plays
+        
+        return container
+    
     def _build_side_panel(self):
         """
         Build the waveform/EQ panel.
@@ -1559,12 +1905,12 @@ class MainWindow(QMainWindow):
         layout_grp = QActionGroup(self)
         layout_grp.setExclusive(True)
 
-        act_full_view = QAction("Full View", self)
-        act_full_view.setCheckable(True)
-        act_full_view.setChecked(True)  # Default
-        act_full_view.triggered.connect(lambda: self._apply_layout_preset("full_view"))
-        layout_grp.addAction(act_full_view)
-        m_layout.addAction(act_full_view)
+        act_queue_eq = QAction("Queue + EQ", self)
+        act_queue_eq.setCheckable(True)
+        act_queue_eq.setChecked(True)  # Default
+        act_queue_eq.triggered.connect(lambda: self._apply_layout_preset("queue_eq"))
+        layout_grp.addAction(act_queue_eq)
+        m_layout.addAction(act_queue_eq)
 
         act_queue_only = QAction("Queue Only", self)
         act_queue_only.setCheckable(True)
@@ -1578,18 +1924,18 @@ class MainWindow(QMainWindow):
         layout_grp.addAction(act_eq_only)
         m_layout.addAction(act_eq_only)
 
-        act_search_only = QAction("Search && Queue", self)
-        act_search_only.setCheckable(True)
-        act_search_only.triggered.connect(lambda: self._apply_layout_preset("search_only"))
-        layout_grp.addAction(act_search_only)
-        m_layout.addAction(act_search_only)
+        act_artist_info = QAction("Artist Info", self)
+        act_artist_info.setCheckable(True)
+        act_artist_info.triggered.connect(lambda: self._apply_layout_preset("artist_info"))
+        layout_grp.addAction(act_artist_info)
+        m_layout.addAction(act_artist_info)
 
         # Store layout actions for later reference
         self._layout_actions = {
-            "full_view": act_full_view,
+            "queue_eq": act_queue_eq,
             "queue_only": act_queue_only,
             "eq_only": act_eq_only,
-            "search_only": act_search_only,
+            "artist_info": act_artist_info,
         }
 
         m_view.addSeparator()
@@ -1681,10 +2027,12 @@ class MainWindow(QMainWindow):
             # Layout preset behavior
             remember = bool(prefs.get("remember_layout", True))
             default_layout = prefs.get("default_layout_preset", "queue_eq")
-            # Map old "full_view" to new "queue_eq"
+            # Map old names to new standardized names
             if default_layout == "full_view":
                 default_layout = "queue_eq"
-            if not remember and default_layout in ("queue_eq", "queue_only", "eq_only", "search_only"):
+            elif default_layout == "search_only" or default_layout == "search_queue":
+                default_layout = "artist_info"
+            if not remember and default_layout in ("queue_eq", "queue_only", "eq_only", "artist_info"):
                 self._apply_layout_preset(default_layout)
             else:
                 # Always apply default layout on startup for consistency
@@ -3307,6 +3655,9 @@ Licensed under AGPL v3</p>
         # Update metadata display for the loaded track
         self._update_metadata_display(path)
         
+        # Update Now Playing artist info display
+        self._update_artist_info_display(path)
+        
         # Determine source type and playback URL
         # Robust source detection with validation
         stream_url = track_info.get('stream_url')
@@ -4418,40 +4769,17 @@ Licensed under AGPL v3</p>
         """Apply a layout preset (workflow mode).
         
         Args:
-            preset: One of "all_panels", "queue_eq", "queue_only", "eq_only", "search_only"
-                - all_panels: All three panels visible (default)
-                - queue_eq: Queue and EQ panels only (no search)
+            preset: One of "queue_eq", "queue_only", "eq_only", "artist_info"
+                - queue_eq: Queue and EQ panels only (default, no artist info)
                 - queue_only: Just the queue panel
                 - eq_only: Just the EQ panel
-                - search_only: Search & queue panels (no EQ)
+                - artist_info: Artist info panel only (full height)
         """
         try:
             # Remember current preset for stretch logic nuances
             self._current_layout_preset = preset
-            if preset == "all_panels":
-                # All Panels - Show everything
-                self.queue_panel.set_collapsed(False)
-                self.eq_panel.set_collapsed(False)
-                self.search_panel.set_collapsed(False)
-                self.queue_panel.setVisible(True)
-                self.eq_panel.setVisible(True)
-                self.search_panel.setVisible(True)
-                try:
-                    # All panels size to content
-                    self.queue_panel.lock_content_height(True)
-                    self.queue_panel.set_content_stretch(False)
-                    self.eq_panel.lock_content_height(True)
-                    self.eq_panel.set_content_stretch(False)
-                    self.search_panel.lock_content_height(True)
-                    self.search_panel.set_content_stretch(False)
-                    # Reset alignment to default
-                    if hasattr(self, '_central_layout'):
-                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
-                except Exception:
-                    pass
-                print("[App] Applied All Panels layout (queue + EQ + search)")
-                
-            elif preset == "queue_only":
+            
+            if preset == "queue_only":
                 # Queue Only
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(True)
@@ -4490,34 +4818,23 @@ Licensed under AGPL v3</p>
                     pass
                 print("[App] Applied EQ Only layout")
                 
-            elif preset == "search_only":
-                # Search & Queue View (Full View minus EQ)
-                # Show search panel and compact queue at bottom
-                self.queue_panel.set_collapsed(False)  # Keep queue visible
+            elif preset == "artist_info":
+                # Artist Info View - Just the artist info panel at full height
+                self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(False)
-                self.queue_panel.setVisible(True)      # Keep queue visible!
+                self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(True)
                 
-                # Make queue compact (70% of space to search, 30% to queue)
+                # Make artist info panel expand to fill all available space
                 try:
-                    # Search panel gets most of the space
                     self.search_panel.lock_content_height(False)
                     self.search_panel.set_content_stretch(True)
-                    
-                    # Queue stays compact at bottom
-                    self.queue_panel.lock_content_height(True)
-                    self.queue_panel.set_content_stretch(False)
-                    
-                    # Adjust search bar to expand
-                    if getattr(self, 'search_bar', None) is not None:
-                        from PySide6.QtWidgets import QSizePolicy
-                        self.search_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 except Exception as e:
-                    print(f"[App] Error configuring Search & Queue layout: {e}")
+                    print(f"[App] Error configuring Artist Info layout: {e}")
                     
-                print("[App] Applied Search & Queue layout (search + mini queue)")
+                print("[App] Applied Artist Info layout (artist info only)")
                 
             elif preset == "queue_eq":
                 # Queue + EQ View - Queue and EQ panels only (no search)
@@ -4538,28 +4855,13 @@ Licensed under AGPL v3</p>
                         self._central_layout.setAlignment(Qt.AlignmentFlag(0))
                 except Exception:
                     pass
-                print("[App] Applied Queue + EQ layout (no search)")
+                print("[App] Applied Queue + EQ layout (no artist info)")
             
             else:
-                # Legacy "full_view" - map to queue_eq for backwards compatibility
-                self.queue_panel.set_collapsed(False)
-                self.eq_panel.set_collapsed(False)
-                self.search_panel.set_collapsed(True)
-                self.queue_panel.setVisible(True)
-                self.eq_panel.setVisible(True)
-                self.search_panel.setVisible(False)
-                try:
-                    # Panels size to content
-                    self.queue_panel.lock_content_height(True)
-                    self.queue_panel.set_content_stretch(False)
-                    self.eq_panel.lock_content_height(True)
-                    self.eq_panel.set_content_stretch(False)
-                    # Reset alignment to default
-                    if hasattr(self, '_central_layout'):
-                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
-                except Exception:
-                    pass
-                print("[App] Applied legacy full_view as Queue + EQ layout")
+                # Unknown preset - default to queue_eq
+                print(f"[App] Warning: Unknown layout preset '{preset}', using queue_eq")
+                self._apply_layout_preset("queue_eq")
+                return
             
             # Update stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
@@ -4680,11 +4982,11 @@ Licensed under AGPL v3</p>
                 self.table.setParent(queue_page)
                 queue_page.layout().addWidget(self.table)
 
-            # Reparent search bar
-            if getattr(self, "search_bar", None) is not None and search_page is not None:
-                self._orig_search_parent = self.search_bar.parent()
-                self.search_bar.setParent(search_page)
-                search_page.layout().addWidget(self.search_bar)
+            # Reparent artist info widget (formerly search_bar)
+            if getattr(self, "artist_info_widget", None) is not None and search_page is not None:
+                self._orig_artist_info_parent = self.artist_info_widget.parent()
+                self.artist_info_widget.setParent(search_page)
+                search_page.layout().addWidget(self.artist_info_widget)
 
             # For EQ page, show a simple placeholder for now
             from PySide6.QtWidgets import QLabel
@@ -4714,13 +5016,13 @@ Licensed under AGPL v3</p>
                     self.queue_panel.lock_content_height(True)
                 self._orig_table_parent = None
 
-            # Restore search bar
-            if getattr(self, "search_bar", None) is not None and hasattr(self, "_orig_search_parent") and self._orig_search_parent is not None:
-                self.search_bar.setParent(self._orig_search_parent)
+            # Restore artist info widget
+            if getattr(self, "artist_info_widget", None) is not None and hasattr(self, "_orig_artist_info_parent") and self._orig_artist_info_parent is not None:
+                self.artist_info_widget.setParent(self._orig_artist_info_parent)
                 if hasattr(self, "search_panel"):
-                    self.search_panel.set_content(self.search_bar)
-                    self.search_panel.lock_content_height(True)
-                self._orig_search_parent = None
+                    self.search_panel.set_content(self.artist_info_widget)
+                    self.search_panel.lock_content_height(False)
+                self._orig_artist_info_parent = None
 
             # Swap back to classic central widget
             if getattr(self, "_prev_central", None) is not None:
@@ -4733,10 +5035,10 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
         
         Args:
-            index: 0=Queue + EQ, 1=Queue Only, 2=EQ Only, 3=Search & Queue
+            index: 0=Queue + EQ, 1=Queue Only, 2=EQ Only, 3=Artist Info
         """
-        # Map dropdown indices to preset names (removed "all_panels")
-        presets = ["queue_eq", "queue_only", "eq_only", "search_queue"]
+        # Map dropdown indices to preset names
+        presets = ["queue_eq", "queue_only", "eq_only", "artist_info"]
         if 0 <= index < len(presets):
             self._apply_layout_preset(presets[index])
     
