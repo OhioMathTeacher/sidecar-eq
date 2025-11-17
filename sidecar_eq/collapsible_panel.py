@@ -56,7 +56,7 @@ class CollapsiblePanel(QWidget):
         self._header_widgets = set()
         # Note: Headers are NOT clickable - only the View menu controls panel visibility
 
-        header_height = max(1, self.title_frame.maximumHeight() or HEADER_HEIGHT)
+        header_height = 0  # Title bar is hidden
         
         # Set initial size policy based on start state
         if start_collapsed:
@@ -82,16 +82,16 @@ class CollapsiblePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Title bar (static label, not clickable - layout controlled by dropdown)
+        # Title bar (HIDDEN - redundant with dropdown selector)
         self.title_frame = QFrame()
         self.title_frame.setFrameShape(QFrame.Shape.StyledPanel)
         
-    # Fixed height for a compact header
-    # Use both setFixedHeight and size policy to prevent expansion
-        self.title_frame.setFixedHeight(HEADER_HEIGHT)
-        self.title_frame.setMinimumHeight(HEADER_HEIGHT)
-        self.title_frame.setMaximumHeight(HEADER_HEIGHT)
+        # Hide the title bar completely
+        self.title_frame.setFixedHeight(0)
+        self.title_frame.setMinimumHeight(0)
+        self.title_frame.setMaximumHeight(0)
         self.title_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.title_frame.setVisible(False)  # Hide it completely
         
         # Modern styling with system colors (no hover since not interactive)
         if USE_MODERN_UI:
@@ -255,7 +255,7 @@ class CollapsiblePanel(QWidget):
         # Update arrow status indicator (▶ = hidden, ▼ = visible)
         self.arrow_label.setText("▶" if collapsed else "▼")
         
-        header_height = max(1, self.title_frame.maximumHeight() or HEADER_HEIGHT)
+        header_height = 0  # Title bar is hidden
 
         # Cancel any existing animation
         if self._animation:

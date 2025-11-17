@@ -118,3 +118,10 @@ class RackView(QWidget):
         btn = self._buttons.get(page_id)
         if btn is not None:
             btn.click()
+
+    def set_active(self, page_id: str):
+        """Highlight a module button without emitting selection signals."""
+        for pid, btn in self._buttons.items():
+            btn.blockSignals(True)
+            btn.setChecked(pid == page_id)
+            btn.blockSignals(False)

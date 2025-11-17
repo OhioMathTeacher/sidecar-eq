@@ -87,6 +87,7 @@ try:
     USE_MODERN_UI = True
 except ImportError:
     USE_MODERN_UI = False
+from .music_metadata import MusicMetadataFetcher
 from .player import Player
 from .queue_model import QueueModel
 from .plex_helpers import get_playlist_titles, get_tracks_for_playlist
@@ -94,7 +95,7 @@ from .scrolling_label import ScrollingLabel
 from .star_rating_delegate import StarRatingDelegate
 from .ui import IconButton, KnobWidget, QueueTableView, SnapKnobWidget, WaveformProgress
 from .settings_panel import SettingsDialog
-from .rack import RackView, OutputCanvas
+from .rack import RackView
 from .workers import BackgroundAnalysisWorker
 
 # Media file extensions
@@ -305,6 +306,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[SidecarEQ] Indexer failed: {e}")
             self.indexer = None
+
+        # Music metadata fetcher for artist info
+        try:
+            self.metadata_fetcher = MusicMetadataFetcher()
+        except Exception as e:
+            print(f"[SidecarEQ] Metadata fetcher failed: {e}")
+            self.metadata_fetcher = None
 
         # Artist info panel will be created in UI setup - no search bar needed
         
@@ -653,31 +661,15 @@ class MainWindow(QMainWindow):
         If queue is empty, load a default track (Children of the Grave by Black Sabbath)."""
         try:
             if self.model.rowCount() > 0:
-                # Queue has tracks - select the first one and search for it
+                # Queue has tracks - select the first one and populate artist info
                 first_index = self.model.index(0, 2)  # Column 2 is Title
                 self.table.setCurrentIndex(first_index)
                 self.table.selectRow(0)
-                
-                # Get metadata for the first track
+
                 if len(self.model._rows) > 0:
-                    row_data = self.model._rows[0]
-                    title = row_data.get('title', '')
-                    artist = row_data.get('artist', '')
-                    album = row_data.get('album', '')
-                    
-                    # Search for artist or album if available, otherwise title
-                    if artist:
-                        search_term = artist
-                    elif album:
-                        search_term = album
-                    elif title:
-                        search_term = title
-                    else:
-                        search_term = ""
-                    
-                    if search_term and self.search_bar:
-                        self.search_bar.set_search_text(search_term, trigger_search=True)
-                        print(f"[App] Auto-search for: {search_term}")
+                    first_path = self.model._rows[0].get('path')
+                    if first_path:
+                        self._update_artist_info_display(first_path)
             else:
                 # Queue is empty - load default track (MLK "I Have a Dream" speech)
                 print("[App] Queue is empty, loading default track: MLK 'I Have a Dream' speech")
@@ -700,15 +692,11 @@ class MainWindow(QMainWindow):
                         self.table.setCurrentIndex(first_index)
                         self.table.selectRow(0)
                         
-                        # Search for the track title or "MLK"
-                        if self.search_bar:
-                            self.search_bar.set_search_text("MLK", trigger_search=True)
-                            print("[App] Auto-search for: MLK")
+                        self._update_artist_info_display(str(default_path))
                 else:
                     print(f"[App] Default track not found at: {default_path}")
-                    # Still show search panel with a general search
-                    if self.search_bar:
-                        self.search_bar.set_search_text("")
+                    if hasattr(self, 'artist_info_widget'):
+                        self.artist_info_widget.setVisible(False)
                     
         except Exception as e:
             print(f"[App] Failed to do initial selection: {e}")
@@ -1060,8 +1048,9 @@ class MainWindow(QMainWindow):
     def _create_artist_info_display(self):
         """Create the Now Playing artist info display widget with rich metadata."""
         try:
-            from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
-            from PySide6.QtCore import Qt
+            from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget, QHBoxLayout, QPushButton
+            from PySide6.QtCore import Qt, QSize
+            from PySide6.QtGui import QPixmap
             
             # Main scrollable container (parent to self to avoid floating windows)
             scroll = QScrollArea(self)
@@ -1082,125 +1071,221 @@ class MainWindow(QMainWindow):
             """)
             
             layout = QVBoxLayout()
-            layout.setSpacing(16)
-            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(15)
+            layout.setContentsMargins(20, 20, 20, 20)
             
-            # --- ARTIST NAME (large, bold) ---
-            self.artist_name_label = QLabel("No track playing")
-            self.artist_name_label.setStyleSheet("""
+            # --- ALBUM TRACKLIST (TOP, 2 COLUMNS) ---
+            header_row = QHBoxLayout()
+            header_row.setContentsMargins(0,0,0,0)
+            header_row.setSpacing(8)
+
+            tracklist_header = QLabel("Album Tracks")
+            tracklist_header.setStyleSheet("""
                 QLabel {
-                    font-size: 24px;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    font-size: 15px;
                     font-weight: bold;
                     color: #ffffff;
-                    padding: 8px 0;
+                    padding-bottom: 8px;
                 }
             """)
-            layout.addWidget(self.artist_name_label)
-            
-            # --- CURRENT TRACK INFO ---
-            current_track_frame = QFrame(container)
-            current_track_frame.setFrameShape(QFrame.StyledPanel)
-            current_track_frame.setStyleSheet("""
-                QFrame {
+            header_row.addWidget(tracklist_header)
+            header_row.addStretch()
+
+            # Button: Add Artist to Library
+            self.add_artist_btn = QPushButton("Add Artist to Library")
+            self.add_artist_btn.setFixedHeight(24)
+            self.add_artist_btn.setStyleSheet("""
+                QPushButton {
                     background: #2a2a2a;
-                    border: 1px solid #444;
-                    border-radius: 6px;
-                    padding: 12px;
-                }
-            """)
-            current_track_layout = QVBoxLayout()
-            current_track_layout.setSpacing(6)
-            
-            track_header = QLabel("NOW PLAYING", current_track_frame)
-            track_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-            current_track_layout.addWidget(track_header)
-            
-            self.track_title_label = QLabel("", current_track_frame)
-            self.track_title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #fff;")
-            self.track_title_label.setWordWrap(True)
-            current_track_layout.addWidget(self.track_title_label)
-            
-            self.track_info_label = QLabel("", current_track_frame)
-            self.track_info_label.setStyleSheet("font-size: 12px; color: #aaa;")
-            self.track_info_label.setWordWrap(True)
-            current_track_layout.addWidget(self.track_info_label)
-            
-            current_track_frame.setLayout(current_track_layout)
-            layout.addWidget(current_track_frame)
-            
-            # --- ALBUM INFO ---
-            album_frame = QFrame(container)
-            album_frame.setFrameShape(QFrame.StyledPanel)
-            album_frame.setStyleSheet("""
-                QFrame {
-                    background: #2a2a2a;
-                    border: 1px solid #444;
-                    border-radius: 6px;
-                    padding: 12px;
-                }
-            """)
-            album_layout = QVBoxLayout()
-            album_layout.setSpacing(6)
-            
-            album_header = QLabel("ALBUM INFO", album_frame)
-            album_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-            album_layout.addWidget(album_header)
-            
-            self.album_info_label = QLabel("", album_frame)
-            self.album_info_label.setStyleSheet("font-size: 13px; color: #ccc;")
-            self.album_info_label.setWordWrap(True)
-            album_layout.addWidget(self.album_info_label)
-            
-            album_frame.setLayout(album_layout)
-            self.album_frame = album_frame
-            layout.addWidget(album_frame)
-            
-            # --- TOP TRACKS BY THIS ARTIST ---
-            top_tracks_frame = QFrame(container)
-            top_tracks_frame.setFrameShape(QFrame.StyledPanel)
-            top_tracks_frame.setStyleSheet("""
-                QFrame {
-                    background: #2a2a2a;
-                    border: 1px solid #444;
-                    border-radius: 6px;
-                    padding: 12px;
-                }
-            """)
-            top_tracks_layout = QVBoxLayout()
-            top_tracks_layout.setSpacing(6)
-            
-            top_tracks_header = QLabel("TOP TRACKS FROM LIBRARY", top_tracks_frame)
-            top_tracks_header.setStyleSheet("color: #888; font-size: 10px; font-weight: bold;")
-            top_tracks_layout.addWidget(top_tracks_header)
-            
-            self.top_tracks_list = QListWidget(top_tracks_frame)
-            self.top_tracks_list.setStyleSheet("""
-                QListWidget {
-                    background: #1e1e1e;
-                    border: 1px solid #333;
+                    color: #b0d5ff;
+                    border: 1px solid #3a3a3a;
                     border-radius: 4px;
-                    color: #fff;
-                    font-size: 12px;
-                    padding: 4px;
+                    padding: 4px 8px;
+                    font-size: 11px;
                 }
-                QListWidget::item {
-                    padding: 6px;
-                    border-radius: 3px;
-                }
-                QListWidget::item:hover {
-                    background: #3a3a3a;
-                }
-                QListWidget::item:selected {
-                    background: #4a9eff;
+                QPushButton:hover { background: #333; border-color: #4a4a4a; }
+                QPushButton:disabled { color: #777; }
+            """)
+            self.add_artist_btn.clicked.connect(self._on_add_artist_to_library)
+            header_row.addWidget(self.add_artist_btn)
+
+            layout.addLayout(header_row)
+            
+            # Tracklist container with 2-column grid
+            self.tracklist_container = QWidget()
+            from PySide6.QtWidgets import QGridLayout
+            self.tracklist_layout = QGridLayout()
+            self.tracklist_layout.setContentsMargins(0, 0, 0, 0)
+            self.tracklist_layout.setSpacing(3)
+            self.tracklist_layout.setHorizontalSpacing(15)
+            self.tracklist_container.setLayout(self.tracklist_layout)
+            self.tracklist_container.setVisible(False)  # Hidden until loaded
+            layout.addWidget(self.tracklist_container)
+            
+            # --- DIVIDER ---
+            divider = QFrame()
+            divider.setFrameShape(QFrame.HLine)
+            divider.setStyleSheet("background: #444; max-height: 1px; margin-top: 5px; margin-bottom: 10px;")
+            layout.addWidget(divider)
+            
+            # --- MAIN CONTENT: Album art + Bio side-by-side ---
+            content_layout = QHBoxLayout()
+            content_layout.setSpacing(20)
+            
+            # Left side: Album artwork (fixed size, smaller)
+            self.album_art_label = QLabel()
+            self.album_art_label.setFixedSize(QSize(200, 200))
+            self.album_art_label.setScaledContents(True)
+            self.album_art_label.setStyleSheet("""
+                QLabel {
+                    background: #2a2a2a;
+                    border: 1px solid #444;
+                    border-radius: 6px;
                 }
             """)
-            self.top_tracks_list.setMaximumHeight(150)
-            self.top_tracks_list.itemDoubleClicked.connect(self._on_top_track_double_clicked)
-            top_tracks_layout.addWidget(self.top_tracks_list)
+            # Set placeholder image
+            placeholder_pixmap = QPixmap(200, 200)
+            placeholder_pixmap.fill(Qt.transparent)
+            self.album_art_label.setPixmap(placeholder_pixmap)
+            content_layout.addWidget(self.album_art_label, 0, Qt.AlignTop)
             
-            top_tracks_frame.setLayout(top_tracks_layout)
-            self.top_tracks_frame = top_tracks_frame
-            layout.addWidget(top_tracks_frame)
+            # Right side: Bio text (expanding)
+            bio_container = QWidget()
+            bio_layout = QVBoxLayout()
+            bio_layout.setContentsMargins(0, 0, 0, 0)
+            bio_layout.setSpacing(10)
+            
+            # --- FONT SIZE CONTROLS ---
+            font_controls = QWidget()
+            font_controls_layout = QHBoxLayout()
+            font_controls_layout.setContentsMargins(0, 0, 0, 5)
+            font_controls_layout.setSpacing(8)
+            
+            font_label = QLabel("Text Size:")
+            font_label.setStyleSheet("color: #888; font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;")
+            font_controls_layout.addWidget(font_label)
+            
+            # Font size state (14pt is default/medium)
+            self.bio_font_size = 14
+            
+            # Small button
+            small_btn = QPushButton("S")
+            small_btn.setFixedSize(30, 24)
+            small_btn.setStyleSheet("""
+                QPushButton {
+                    background: #2a2a2a;
+                    color: #888;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background: #3a3a3a;
+                    color: #aaa;
+                }
+                QPushButton:pressed {
+                    background: #1a1a1a;
+                }
+            """)
+            small_btn.clicked.connect(lambda: self._set_bio_font_size(12))
+            font_controls_layout.addWidget(small_btn)
+            
+            # Medium button
+            medium_btn = QPushButton("M")
+            medium_btn.setFixedSize(30, 24)
+            medium_btn.setStyleSheet("""
+                QPushButton {
+                    background: #4a9eff;
+                    color: #fff;
+                    border: 1px solid #4a9eff;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background: #5aa9ff;
+                }
+                QPushButton:pressed {
+                    background: #3a8eef;
+                }
+            """)
+            medium_btn.clicked.connect(lambda: self._set_bio_font_size(14))
+            font_controls_layout.addWidget(medium_btn)
+            self.font_size_medium_btn = medium_btn  # Save reference for highlighting
+            
+            # Large button
+            large_btn = QPushButton("L")
+            large_btn.setFixedSize(30, 24)
+            large_btn.setStyleSheet("""
+                QPushButton {
+                    background: #2a2a2a;
+                    color: #888;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background: #3a3a3a;
+                    color: #aaa;
+                }
+                QPushButton:pressed {
+                    background: #1a1a1a;
+                }
+            """)
+            large_btn.clicked.connect(lambda: self._set_bio_font_size(16))
+            font_controls_layout.addWidget(large_btn)
+            
+            # Store button references for highlighting
+            self.font_size_buttons = {
+                12: small_btn,
+                14: medium_btn,
+                16: large_btn
+            }
+            
+            font_controls_layout.addStretch()
+            font_controls.setLayout(font_controls_layout)
+            bio_layout.addWidget(font_controls)
+            
+            # --- ARTIST BIO (scrollable, webpage-like) ---
+            self.artist_bio_label = QLabel("")
+            self.artist_bio_label.setStyleSheet(f"""
+                QLabel {{
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    font-size: {self.bio_font_size}px;
+                    color: #e0e0e0;
+                    line-height: 1.7;
+                    padding: 0px;
+                    background: transparent;
+                }}
+            """)
+            self.artist_bio_label.setWordWrap(True)
+            self.artist_bio_label.setTextFormat(Qt.RichText)
+            self.artist_bio_label.setOpenExternalLinks(True)
+            self.artist_bio_label.setVisible(False)  # Hidden until loaded
+            self.artist_bio_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            bio_layout.addWidget(self.artist_bio_label)
+            
+            # --- GENRES / TAGS ---
+            self.genres_label = QLabel("")
+            self.genres_label.setStyleSheet("""
+                QLabel {
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    font-size: 11px;
+                    color: #888;
+                    padding: 10px 0px 0px 0px;
+                }
+            """)
+            self.genres_label.setWordWrap(True)
+            self.genres_label.setVisible(False)
+            bio_layout.addWidget(self.genres_label)
+            
+            bio_container.setLayout(bio_layout)
+            content_layout.addWidget(bio_container, 1)  # Stretch to fill
+            
+            layout.addLayout(content_layout)
             
             # Add stretch to push content to top
             layout.addStretch()
@@ -1218,12 +1303,71 @@ class MainWindow(QMainWindow):
             dummy = QScrollArea(self)
             return dummy
     
-    def _on_top_track_double_clicked(self, item):
-        """Handle double-click on a top track to add it to the queue."""
-        track_path = item.data(Qt.UserRole)
-        if track_path:
-            self.model.add_path(track_path)
-            self.statusBar().showMessage(f"Added to queue: {Path(track_path).name}", 2000)
+    def _set_bio_font_size(self, size):
+        """Change the font size for the artist bio text.
+        
+        Args:
+            size: Font size in pixels (12, 14, or 16)
+        """
+        try:
+            self.bio_font_size = size
+            
+            # Update bio label style
+            self.artist_bio_label.setStyleSheet(f"""
+                QLabel {{
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                    font-size: {self.bio_font_size}px;
+                    color: #e0e0e0;
+                    line-height: 1.7;
+                    padding: 10px;
+                    background: transparent;
+                }}
+            """)
+            
+            # Update button highlighting
+            for btn_size, btn in self.font_size_buttons.items():
+                if btn_size == size:
+                    # Active button
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            background: #4a9eff;
+                            color: #fff;
+                            border: 1px solid #4a9eff;
+                            border-radius: 4px;
+                            font-size: 11px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background: #5aa9ff;
+                        }
+                        QPushButton:pressed {
+                            background: #3a8eef;
+                        }
+                    """)
+                else:
+                    # Inactive button
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            background: #2a2a2a;
+                            color: #888;
+                            border: 1px solid #444;
+                            border-radius: 4px;
+                            font-size: 11px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background: #3a3a3a;
+                            color: #aaa;
+                        }
+                        QPushButton:pressed {
+                            background: #1a1a1a;
+                        }
+                    """)
+            
+            print(f"[App] Bio font size changed to {size}px")
+            
+        except Exception as e:
+            print(f"[App] Failed to change bio font size: {e}")
     
     def _update_artist_info_display(self, path):
         """Update the Now Playing artist info display with rich metadata from the currently playing track.
@@ -1237,55 +1381,44 @@ class MainWindow(QMainWindow):
         try:
             # Get metadata for the track
             track_info = None
-            if hasattr(self, 'model') and self.model and self.current_row is not None:
-                if self.current_row < len(self.model._rows):
+            if hasattr(self, 'model') and self.model:
+                if self.current_row is not None and self.current_row < len(self.model._rows):
                     track_info = self.model._rows[self.current_row]
-            
+                if not track_info:
+                    # Fallback: find by path so selection updates even before playback
+                    for row in getattr(self.model, '_rows', []):
+                        if row.get('path') == path:
+                            track_info = row
+                            break
+
             if not track_info:
                 # Hide if no track info available
                 self.artist_info_widget.setVisible(False)
                 return
             
-            # Extract metadata
+            # Extract metadata (no need to update labels - info is in LED display)
             artist = track_info.get('artist', 'Unknown Artist')
             album = track_info.get('album', '')
-            title = track_info.get('title', Path(path).stem if isinstance(path, str) else 'Unknown')
-            year = track_info.get('year', '')
+
+            # Remember current context for actions like Add Artist to Library
+            self._current_artist_for_metadata = artist
+            self._current_album_for_metadata = album
             
-            # Update artist name (large header)
-            self.artist_name_label.setText(artist)
-            
-            # Update current track info
-            self.track_title_label.setText(title)
-            
-            track_details = []
-            if album:
-                track_details.append(f"from <b>{album}</b>")
-            if year:
-                track_details.append(f"({year})")
-            self.track_info_label.setText(" ".join(track_details) if track_details else "")
-            
-            # Update album info section
-            album_info_parts = []
-            if album:
-                album_info_parts.append(f"<b>Album:</b> {album}")
-            if year:
-                album_info_parts.append(f"<b>Year:</b> {year}")
-            
-            # Try to get more album metadata if available
-            if track_info.get('album_artist'):
-                album_artist = track_info.get('album_artist')
-                if album_artist != artist:
-                    album_info_parts.append(f"<b>Album Artist:</b> {album_artist}")
-            
-            if album_info_parts:
-                self.album_info_label.setText("<br>".join(album_info_parts))
-                self.album_frame.setVisible(True)
+            # Fetch artist metadata in background
+            if hasattr(self, 'metadata_fetcher') and self.metadata_fetcher and artist and artist != 'Unknown Artist':
+                # Show loading state
+                self.artist_bio_label.setText(f'<span style="color: #999; font-style: italic;">Loading artist info for {artist}...</span>')
+                self.genres_label.setText("")
+                
+                # Fetch in background (method handles threading internally)
+                self._fetch_artist_metadata(artist, album)
             else:
-                self.album_frame.setVisible(False)
-            
-            # Query library for top tracks by this artist
-            self._populate_top_tracks(artist)
+                # No metadata fetcher or unknown artist - clear extra fields
+                self.artist_bio_label.setText("")
+                self.genres_label.setText("")
+                self.album_art_label.clear()
+                self.album_art_label.setText("No artwork")
+                self.tracklist_container.setVisible(False)
             
             # Show the display
             self.artist_info_widget.setVisible(True)
@@ -1296,120 +1429,426 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             self.artist_info_widget.setVisible(False)
     
-    def _populate_top_tracks(self, artist):
-        """Query library and populate top tracks by the given artist.
+    def _fetch_artist_metadata(self, artist, album):
+        """Fetch artist metadata (bio, genres, artwork) from external sources.
+        
+        This runs in a background thread to avoid blocking UI.
         
         Args:
-            artist: Artist name to query
+            artist: Artist name
+            album: Album name (optional)
         """
         try:
-            self.top_tracks_list.clear()
+            print(f"[App] Fetching metadata for: {artist} - {album}")
             
-            if not artist or artist == 'Unknown Artist':
-                self.top_tracks_frame.setVisible(False)
-                return
+            # Fetch artist info (this is the slow network operation)
+            artist_info = self.metadata_fetcher.get_artist_info(artist, album)
             
-            # Query the library for tracks by this artist
-            if not hasattr(self, 'indexer') or not self.indexer:
-                self.top_tracks_frame.setVisible(False)
-                return
+            print(f"[App] Artist info received: {artist_info.keys() if artist_info else 'None'}")
             
-            library = self.indexer.get_library()
-            if not library:
-                self.top_tracks_frame.setVisible(False)
-                return
-            
-            # Get all tracks by this artist
-            artist_tracks = []
-            for track_path, track_data in library.items():
-                if track_data.get('artist', '').lower() == artist.lower():
-                    artist_tracks.append({
-                        'path': track_path,
-                        'title': track_data.get('title', Path(track_path).stem),
-                        'album': track_data.get('album', ''),
-                        'play_count': track_data.get('play_count', 0)
-                    })
-            
-            if not artist_tracks:
-                self.top_tracks_frame.setVisible(False)
-                return
-            
-            # Sort by play count (descending) and take top 5
-            artist_tracks.sort(key=lambda x: x['play_count'], reverse=True)
-            top_5 = artist_tracks[:5]
-            
-            # Populate the list
-            for track in top_5:
-                play_count = track['play_count']
-                title = track['title']
-                album = track['album']
+            # Prepare bio text
+            bio_html = None
+            if artist_info and artist_info.get('bio'):
+                bio_text = artist_info['bio']
+                # Remove excessive whitespace
+                bio_text = ' '.join(bio_text.split())
+                # Don't truncate - let it flow like a webpage
                 
-                # Format: "Title - Album (12 plays)"
-                display_text = title
-                if album:
-                    display_text += f" • {album}"
-                if play_count > 0:
-                    display_text += f" ({play_count} plays)"
+                # Escape HTML entities
+                from html import escape
+                bio_html = escape(bio_text)
+                print(f"[App] Bio prepared: {len(bio_text)} chars")
                 
-                item = QListWidgetItem(display_text)
-                item.setData(Qt.UserRole, track['path'])  # Store path for double-click
-                item.setToolTip(f"Double-click to add to queue\n{track['path']}")
-                self.top_tracks_list.addItem(item)
+                # Update bio label (no inline styles, use CSS from setStyleSheet)
+                self.artist_bio_label.setText(bio_html)
+                self.artist_bio_label.setVisible(True)
+                print(f"[App] ✅ Bio label updated")
+            else:
+                print(f"[App] No bio found for {artist}")
+                self.artist_bio_label.setText(f'<span style="color: #999; font-style: italic;">No biography available for {artist}</span>')
+                self.artist_bio_label.setVisible(True)
             
-            self.top_tracks_frame.setVisible(True)
+            # Update genres
+            if artist_info and artist_info.get('genres'):
+                genres = artist_info['genres'][:7]  # Limit to 7 genres
+                genres_html = ' '.join([
+                    f'<span style="background: #3a3a3a; color: #4a9eff; padding: 6px 12px; '
+                    f'border-radius: 14px; font-size: 11pt; margin-right: 8px; display: inline-block; margin-bottom: 6px;">{g}</span>' 
+                    for g in genres
+                ])
+                self.genres_label.setText(genres_html)
+                self.genres_label.setVisible(True)
+                print(f"[App] ✅ Genres displayed: {genres}")
+            else:
+                self.genres_label.setText("")
+                self.genres_label.setVisible(False)
             
+            # Fetch and display album artwork
+            if album:
+                print(f"[App] Fetching artwork for: {album}")
+                artwork_url = self.metadata_fetcher.get_album_artwork(artist, album)
+                if artwork_url:
+                    print(f"[App] Artwork URL: {artwork_url}")
+                    self._load_album_artwork(artwork_url)
+                else:
+                    print(f"[App] No artwork found")
+                    self.album_art_label.clear()
+                    self.album_art_label.setText("No artwork")
+                
+                # Fetch and display album tracklist
+                print(f"[App] Fetching tracklist for: {album}")
+                tracks = self.metadata_fetcher.get_album_tracklist(artist, album)
+                if tracks:
+                    self._populate_tracklist(tracks, artist, album)
+                else:
+                    print(f"[App] No tracklist found")
+                    self.tracklist_container.setVisible(False)
+            else:
+                self.album_art_label.clear()
+                self.album_art_label.setText("No album")
+                self.tracklist_container.setVisible(False)
+                
         except Exception as e:
-            print(f"[App] Failed to populate top tracks: {e}")
+            print(f"[App] Failed to fetch artist metadata: {e}")
             import traceback
             traceback.print_exc()
-            self.top_tracks_frame.setVisible(False)
+            self.artist_bio_label.setText(f'<p style="color: #ff6b6b;">Error loading artist info: {str(e)}</p>')
+            self.artist_bio_label.setVisible(True)
     
-    def _create_artist_info_display(self):
-        """Create the artist info display widget that shows currently playing artist info."""
-        from PySide6.QtWidgets import QFrame, QLabel
-        from PySide6.QtCore import Qt
+    def _populate_tracklist(self, tracks, artist, album):
+        """Populate the tracklist with clickable track buttons in a 2-column grid.
         
-        container = QFrame()
-        container.setFrameShape(QFrame.StyledPanel)
-        container.setStyleSheet("""
-            QFrame {
-                background: #2a2a2a;
-                border: 1px solid #444;
-                border-radius: 6px;
-                padding: 12px;
-            }
-        """)
+        Args:
+            tracks: List of track dicts with 'number', 'title', 'length' keys
+            artist: Artist name
+            album: Album name
+        """
+        try:
+            # Clear existing tracks
+            while self.tracklist_layout.count():
+                child = self.tracklist_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            # Compute availability from indexed library (if present)
+            available_titles = set()
+            def _norm_title(s):
+                return ''.join(ch for ch in (s or '').lower() if ch.isalnum())
+            def _norm_artist(s):
+                s = (s or '').strip().lower()
+                s = s.replace(', the', '').replace('the ', '')
+                return ''.join(ch for ch in s if ch.isalnum())
+            def _norm_album(s):
+                return ''.join(ch for ch in (s or '').lower() if ch.isalnum())
+            try:
+                if getattr(self, 'indexer', None) and self.indexer.library and self.indexer.library.artists:
+                    target_artist_key = _norm_artist(artist)
+                    target_album_key = _norm_album(album)
+                    for lib_artist in self.indexer.library.artists.values():
+                        if _norm_artist(lib_artist.name) == target_artist_key:
+                            # If album specified, restrict to it; else include all
+                            for alb in lib_artist.albums.values():
+                                if not target_album_key or _norm_album(alb.title) == target_album_key:
+                                    for song in alb.songs:
+                                        available_titles.add(_norm_title(song.title))
+            except Exception as _e:
+                pass
+            
+            # Add each track as a clickable button in 2 columns
+            for idx, track in enumerate(tracks):
+                track_btn = QPushButton()
+                track_num = track.get('number', '?')
+                track_title = track.get('title', 'Unknown')
+                track_length = track.get('length')
+                
+                # Format length if available (convert ms to mm:ss)
+                length_str = ""
+                if track_length:
+                    total_seconds = track_length // 1000
+                    minutes = total_seconds // 60
+                    seconds = total_seconds % 60
+                    length_str = f" • {minutes}:{seconds:02d}"
+                
+                track_btn.setText(f"{track_num}. {track_title}{length_str}")
+                track_btn.setStyleSheet("""
+                    QPushButton {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                        font-size: 12px;
+                        color: #ccc;
+                        background: transparent;
+                        border: none;
+                        text-align: left;
+                        padding: 4px 8px;
+                    }
+                    QPushButton:hover {
+                        background: #2a2a2a;
+                        color: #4a9eff;
+                        border-radius: 3px;
+                    }
+                    QPushButton:pressed {
+                        background: #1a1a1a;
+                    }
+                    QPushButton:disabled {
+                        color: #777;
+                    }
+                """)
+                track_btn.setCursor(Qt.PointingHandCursor)
+
+                # Mark disabled if not in library
+                is_available = _norm_title(track_title) in available_titles if available_titles else True
+                track_btn.setEnabled(is_available)
+                if not is_available:
+                    track_btn.setToolTip("Not in your library yet. Click 'Add Artist to Library' to import.")
+                else:
+                    track_btn.setToolTip("Click to add to top of queue and play")
+                
+                # Connect click handler: add to TOP of queue and PLAY immediately
+                track_btn.clicked.connect(
+                    lambda checked, t=track_title, a=artist, al=album: self._add_track_and_play(t, a, al)
+                )
+                
+                # Calculate row and column for 2-column layout
+                row = idx // 2
+                col = idx % 2
+                self.tracklist_layout.addWidget(track_btn, row, col)
+            
+            self.tracklist_container.setVisible(True)
+            print(f"[App] ✅ Populated tracklist with {len(tracks)} tracks in 2 columns")
+            
+        except Exception as e:
+            print(f"[App] Failed to populate tracklist: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_add_artist_to_library(self):
+        """Index music folders to add this artist's songs to the library, then refresh availability."""
+        try:
+            artist = getattr(self, '_current_artist_for_metadata', None)
+            if not artist or artist == 'Unknown Artist':
+                # Try to infer from current row
+                if self.model and self.current_row is not None and 0 <= self.current_row < len(self.model._rows):
+                    artist = self.model._rows[self.current_row].get('artist')
+            if not artist:
+                QMessageBox.information(self, "Add to Library", "No artist is selected.")
+                return
+
+            # Disable button while indexing
+            if hasattr(self, 'add_artist_btn'):
+                self.add_artist_btn.setEnabled(False)
+
+            # Try recent music directories first
+            recent_dirs = store.get_record("recent_music_dirs") or []
+            target_dirs = []
+            if isinstance(recent_dirs, list) and recent_dirs:
+                # Index the most recently used directory first
+                target_dirs = [recent_dirs[0]]
+            else:
+                # Prompt user to choose a folder
+                folder = QFileDialog.getExistingDirectory(self, "Select Music Folder to Index")
+                if folder:
+                    # Save and index
+                    self._add_recent_music_dir(folder)
+                    target_dirs = [folder]
+                else:
+                    if hasattr(self, 'add_artist_btn'):
+                        self.add_artist_btn.setEnabled(True)
+                    return
+
+            # Start indexing for each target folder (sequentially)
+            for folder in target_dirs:
+                self.statusBar().showMessage(f"🔍 Indexing {Path(folder).name}… This may take a while.", 0)
+                self._start_background_indexing(folder)
+
+        except Exception as e:
+            print(f"[App] Failed to start Add Artist to Library: {e}")
+            if hasattr(self, 'add_artist_btn'):
+                self.add_artist_btn.setEnabled(True)
+    
+    def _add_track_and_play(self, track_title, artist, album):
+        """Add clicked song to TOP of queue and play it immediately.
         
-        layout = QVBoxLayout()
-        layout.setSpacing(4)
-        layout.setContentsMargins(0, 0, 0, 0)
+        Strategy:
+        1) If the song is already in the queue, move that row to index 0.
+        2) Else, try to resolve a file path from the indexed library; add it, then move to 0.
+        3) Play row 0 via _play_row(0).
+        """
+        try:
+            print(f"[App] ▶️ Track click: '{track_title}' by '{artist}' (album='{album}')")
+
+            if not getattr(self, 'model', None):
+                print("[App] No queue model available")
+                return
+
+            norm = lambda s: (s or '').strip().lower()
+            t_norm, a_norm = norm(track_title), norm(artist)
+
+            # 1) Check if already in queue
+            existing_row = None
+            existing_path = None
+            for i, row in enumerate(self.model._rows):
+                if norm(row.get('title')) == t_norm and norm(row.get('artist')) == a_norm:
+                    existing_row = i
+                    existing_path = row.get('path')
+                    break
+
+            if existing_row is None:
+                # 2) Resolve from indexed library if available
+                resolved_path = None
+                try:
+                    if getattr(self, 'indexer', None) and self.indexer.library:
+                        # Prefer exact match on artist/title, then fallback to search
+                        search_query = f"{artist} {track_title}".strip()
+                        results = self.indexer.library.search(search_query, limit=50)
+
+                        # Rank: exact artist+title, then title+album, then title, then any
+                        best_song = None
+                        for song in results.get('songs', []):
+                            if norm(song.title) == t_norm and norm(song.artist) == a_norm:
+                                best_song = song
+                                break
+                        if not best_song and album:
+                            for song in results.get('songs', []):
+                                if norm(song.title) == t_norm and norm(song.album) == norm(album):
+                                    best_song = song
+                                    break
+                        if not best_song:
+                            # Try loose title match
+                            for song in results.get('songs', []):
+                                if norm(song.title) == t_norm:
+                                    best_song = song
+                                    break
+                        if not best_song and results.get('songs'):
+                            best_song = results['songs'][0]
+
+                        if best_song:
+                            resolved_path = best_song.path
+                except Exception as e:
+                    print(f"[App] Library search failed: {e}")
+
+                if not resolved_path:
+                    # Fallback: scan the current track's folder for a matching file
+                    try:
+                        base_dir = None
+                        # Prefer directory of currently selected/playing track
+                        if getattr(self, 'current_row', None) is not None and \
+                           0 <= self.current_row < len(self.model._rows):
+                            curr_path = self.model._rows[self.current_row].get('path')
+                            if curr_path and not curr_path.startswith(('http://', 'https://')):
+                                base_dir = os.path.dirname(curr_path)
+                        # Otherwise, find any row with same artist/album to infer folder
+                        if not base_dir:
+                            for r in self.model._rows:
+                                if norm(r.get('artist')) == a_norm and norm(r.get('album')) == norm(album or ''):
+                                    p = r.get('path')
+                                    if p and not p.startswith(('http://', 'https://')):
+                                        base_dir = os.path.dirname(p)
+                                        break
+                        if base_dir and os.path.isdir(base_dir):
+                            print(f"[App] 🔎 Scanning folder for match: {base_dir}")
+                            try:
+                                from mutagen import File as MutagenFile
+                            except Exception:
+                                MutagenFile = None
+
+                            for fname in os.listdir(base_dir):
+                                fpath = os.path.join(base_dir, fname)
+                                if not os.path.isfile(fpath):
+                                    continue
+                                ext = os.path.splitext(fname)[1].lower()
+                                if ext not in AUDIO_EXTS:
+                                    continue
+                                found_match = False
+                                # Try tags first if mutagen is available
+                                if MutagenFile is not None:
+                                    try:
+                                        mf = MutagenFile(fpath, easy=True)
+                                        if mf:
+                                            t = norm((mf.get('title') or [''])[0] if isinstance(mf.get('title'), list) else (mf.get('title') or ''))
+                                            a = norm((mf.get('artist') or [''])[0] if isinstance(mf.get('artist'), list) else (mf.get('artist') or ''))
+                                            if t == t_norm and (not a_norm or a == a_norm):
+                                                found_match = True
+                                    except Exception:
+                                        pass
+                                if not found_match:
+                                    # Fallback: filename heuristic
+                                    stem = os.path.splitext(fname)[0]
+                                    def sanitize(s):
+                                        return ''.join(ch for ch in s.lower() if ch.isalnum())
+                                    if sanitize(stem) == sanitize(track_title):
+                                        found_match = True
+                                if found_match:
+                                    resolved_path = fpath
+                                    print(f"[App] ✅ Found by folder scan: {os.path.basename(fpath)}")
+                                    break
+                    except Exception as e:
+                        print(f"[App] Folder-scan fallback failed: {e}")
+
+                if not resolved_path:
+                    self.statusBar().showMessage(f"Track not found in library: {track_title}", 3000)
+                    print(f"[App] ⚠️ Track not found in indexed library or folder scan: {track_title} by {artist}")
+                    return
+
+                # Append to queue
+                before_len = len(self.model._rows)
+                added = self.model.add_paths([resolved_path])
+                if added <= 0:
+                    self.statusBar().showMessage("Failed to add track to queue", 3000)
+                    return
+                # New row is last index
+                existing_row = before_len
+                existing_path = resolved_path
+
+            # Move to TOP if not already there
+            if existing_row != 0:
+                moved = self.model.moveRows(QModelIndex(), existing_row, 1, QModelIndex(), 0)
+                print(f"[App] Move row {existing_row} -> 0: {'OK' if moved else 'FAILED'}")
+
+            # Ensure selection on row 0
+            try:
+                self.table.selectRow(0)
+            except Exception:
+                pass
+
+            # Play it
+            self._play_row(0)
+            self.statusBar().showMessage(f"Playing now: {track_title}", 3000)
+            print(f"[App] ✅ Added to top and playing: {track_title}")
+
+        except Exception as e:
+            print(f"[App] Failed to add-and-play: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _load_album_artwork(self, url):
+        """Download and display album artwork from URL.
         
-        # Artist name (large, bold)
-        self.artist_name_label = QLabel("No track playing")
-        self.artist_name_label.setStyleSheet("""
-            QLabel {
-                font-size: 18px;
-                font-weight: bold;
-                color: #ffffff;
-            }
-        """)
-        layout.addWidget(self.artist_name_label)
-        
-        # Album & track info
-        self.track_info_label = QLabel("")
-        self.track_info_label.setStyleSheet("""
-            QLabel {
-                font-size: 12px;
-                color: #aaa;
-            }
-        """)
-        self.track_info_label.setWordWrap(True)
-        layout.addWidget(self.track_info_label)
-        
-        container.setLayout(layout)
-        container.setVisible(False)  # Hidden until a track plays
-        
-        return container
+        Args:
+            url: URL to the album artwork image
+        """
+        try:
+            import requests
+            from io import BytesIO
+            
+            # Download image
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            
+            # Load into QPixmap
+            pixmap = QPixmap()
+            pixmap.loadFromData(response.content)
+            
+            if not pixmap.isNull():
+                # Scale to fit 180x180 while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.album_art_label.setPixmap(scaled_pixmap)
+            else:
+                self.album_art_label.clear()
+                self.album_art_label.setText("Invalid image")
+                
+        except Exception as e:
+            print(f"[App] Failed to load album artwork: {e}")
+            self.album_art_label.clear()
+            self.album_art_label.setText("Load failed")
     
     def _build_side_panel(self):
         """
@@ -1841,19 +2280,28 @@ class MainWindow(QMainWindow):
 
         # File menu
         m_file = mb.addMenu("File")
-        act_add_files = QAction("Add Files…", self); act_add_files.triggered.connect(self.on_add_files)
-        act_add_folder = QAction("Add Folder…", self); act_add_folder.triggered.connect(self.on_add_folder)
+        act_add_files = QAction("Add Files…", self)
+        act_add_files.triggered.connect(self.on_add_files)
+        act_add_folder = QAction("Add Folder…", self)
+        act_add_folder.triggered.connect(self.on_add_folder)
 
         # Dynamic Plex submenu - lists all configured servers with their users
         self._plex_menu = m_file.addMenu("Browse Plex")
         self._update_plex_menu()  # Populate with servers
 
-        act_save_pl = QAction("Save Playlist…", self); act_save_pl.triggered.connect(self.on_save_playlist)
-        act_load_pl = QAction("Load Playlist…", self); act_load_pl.triggered.connect(self.on_load_playlist)
-        act_refresh_meta = QAction("Refresh Metadata", self); act_refresh_meta.triggered.connect(self.on_refresh_metadata)
-        act_save_eq = QAction("Save Song EQ", self); act_save_eq.triggered.connect(self._safe_save_eq)
-        act_index_folder = QAction("Index Music Folder for Search…", self); act_index_folder.triggered.connect(self.on_index_folder)
-        act_quit = QAction("Quit", self); act_quit.setShortcut(QKeySequence.Quit); act_quit.triggered.connect(lambda: QApplication.instance().quit())
+        act_save_pl = QAction("Save Playlist…", self)
+        act_save_pl.triggered.connect(self.on_save_playlist)
+        act_load_pl = QAction("Load Playlist…", self)
+        act_load_pl.triggered.connect(self.on_load_playlist)
+        act_refresh_meta = QAction("Refresh Metadata", self)
+        act_refresh_meta.triggered.connect(self.on_refresh_metadata)
+        act_save_eq = QAction("Save Song EQ", self)
+        act_save_eq.triggered.connect(self._safe_save_eq)
+        act_index_folder = QAction("Index Music Folder…", self)
+        act_index_folder.triggered.connect(self.on_index_folder)
+        act_quit = QAction("Quit", self)
+        act_quit.setShortcut(QKeySequence.Quit)
+        act_quit.triggered.connect(lambda: QApplication.instance().quit())
         # Add all items except Quit, then separator, then Quit at bottom (customary)
         for a in [act_add_files, act_add_folder, act_save_pl, act_load_pl, act_refresh_meta, act_save_eq, act_index_folder]:
             m_file.addAction(a)
@@ -1992,11 +2440,11 @@ class MainWindow(QMainWindow):
         self._led_meters_action.triggered.connect(self._toggle_led_meters_from_menu)
         m_view.addAction(self._led_meters_action)
 
-        # Search shortcut (Cmd+F / Ctrl+F)
-        act_search = QAction("Search", self)
-        act_search.setShortcut(QKeySequence.Find)
-        act_search.triggered.connect(lambda: self.search_bar.focus_search() if self.search_bar else None)
-        m_file.addAction(act_search)
+        # Now Playing shortcut (Cmd+F / Ctrl+F)
+        act_show_now_playing = QAction("Show Now Playing Panel", self)
+        act_show_now_playing.setShortcut(QKeySequence.Find)
+        act_show_now_playing.triggered.connect(self._show_artist_info_panel)
+        m_view.addAction(act_show_now_playing)
 
         # Help menu
         m_help = mb.addMenu("Help")
@@ -3037,29 +3485,37 @@ Licensed under AGPL v3</p>
         if error:
             self.statusBar().showMessage(f"Indexing failed: {error}", 5000)
             QMessageBox.warning(self, "Indexing Error", f"Failed to index folder:\n{error}")
+            if hasattr(self, 'add_artist_btn'):
+                self.add_artist_btn.setEnabled(True)
             return
-            
-        # Update search bar with new library (on main thread)
-        if self.search_bar:
-            self.search_bar.set_library(self.indexer.get_library())
-            # Automatically perform initial search with first artist
-            self.search_bar.perform_initial_search()
             
         # Show completion message
         self.statusBar().showMessage(
-            f"✅ Indexing complete! Added {added} new tracks. Total: {total} searchable tracks.", 
+            f"✅ Indexing complete! Added {added} new tracks. Total: {total} indexed tracks.", 
             5000
         )
         
+        # Refresh availability in the Now Playing tracklist
+        try:
+            if self.model and self.current_row is not None and 0 <= self.current_row < len(self.model._rows):
+                current_path = self.model._rows[self.current_row].get('path')
+                if current_path:
+                    self._update_artist_info_display(current_path)
+        except Exception:
+            pass
+
+        # Re-enable button if present
+        if hasattr(self, 'add_artist_btn'):
+            self.add_artist_btn.setEnabled(True)
+
         # Show dialog with results
         QMessageBox.information(
             self, 
             "Indexing Complete! 🎵", 
             f"Successfully indexed your music library!\n\n"
             f"• Added: {added} new tracks\n"
-            f"• Total searchable: {total} tracks\n\n"
-            f"You can now search for songs using the search bar at the top!\n"
-            f"Try typing an artist or song name. 🔍"
+            f"• Total indexed: {total} tracks\n\n"
+            f"The Now Playing panel now reflects available tracks for this artist."
         )
 
     def _discover_plex_servers(self):
@@ -3313,10 +3769,10 @@ Licensed under AGPL v3</p>
     
     def _auto_add_to_library(self, paths: list):
         """Automatically add local audio files to the library when added to queue.
-        
-        This ensures the library stays in sync with tracks in the queue, making
-        search and play count tracking work seamlessly.
-        
+
+        This keeps the on-disk library in sync with the queue so Now Playing
+        stats (top tracks, play counts) remain accurate.
+
         Args:
             paths: List of file paths to add to library
         """
@@ -3359,9 +3815,6 @@ Licensed under AGPL v3</p>
         
         if added > 0:
             self.indexer.save_library()
-            # Update search bar with new library
-            if self.search_bar:
-                self.search_bar.set_library(self.indexer.get_library())
             print(f"[App] 📚 Auto-added {added} track(s) to library")
     
     def _on_metadata_lookup(self, row: int):
@@ -3718,16 +4171,6 @@ Licensed under AGPL v3</p>
             title = self.model.data(self.model.index(row, 2))  # Title is now column 2
             artist = self.model.data(self.model.index(row, 3)) or ""  # Artist is column 3
             album = self.model.data(self.model.index(row, 4)) or ""  # Album is column 4
-            
-            # Auto-search for the currently playing track to show related songs
-            if hasattr(self, 'search_bar') and self.search_bar:
-                try:
-                    self.search_bar.search_for_track(title or "Unknown", artist, album)
-                    # Expand the search panel to show results
-                    if hasattr(self, 'search_panel') and self.search_panel.is_collapsed:
-                        self.search_panel.set_collapsed(False)
-                except Exception as e:
-                    print(f"[App] Failed to auto-search: {e}")
             
             # Show source type in status
             source_labels = {'local': '', 'url': 'from URL', 'plex': 'from Plex', 'video': 'from video'}
@@ -4874,6 +5317,17 @@ Licensed under AGPL v3</p>
         except Exception as e:
             print(f"[App] Failed to apply layout preset: {e}")
 
+    def _show_artist_info_panel(self):
+        """Convenience action to reveal the Now Playing panel."""
+        try:
+            self._apply_layout_preset("artist_info")
+            if hasattr(self, 'search_panel'):
+                self.search_panel.setVisible(True)
+                if getattr(self.search_panel, 'is_collapsed', False):
+                    self.search_panel.set_collapsed(False)
+        except Exception as e:
+            print(f"[App] Failed to show Now Playing panel: {e}")
+
     def _resize_to_fit_visible_panels(self):
         """Resize the fixed-height window to fit the toolbar + visible panels + status bar.
         
@@ -4916,42 +5370,55 @@ Licensed under AGPL v3</p>
         """Prepare the Rack Mode container and pages. Not shown until enabled."""
         if getattr(self, "_rack_container", None) is not None:
             return
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QFrame
+
         self._rack_container = QWidget()
-        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
         root = QHBoxLayout()
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         self._rack_view = RackView()
-        self._rack_output = OutputCanvas()
+        root.addWidget(self._rack_view)
 
-        # Build basic pages; we reparent existing widgets on enter
-        self._rack_pages = {
-            "queue": QWidget(),
-            "eq": QWidget(),
-            "search": QWidget(),
+        self._rack_content_frame = QFrame()
+        self._rack_content_frame.setObjectName("RackContentFrame")
+        self._rack_content_frame.setStyleSheet(
+            """
+            QFrame#RackContentFrame {
+                background: #141414;
+            }
+            """
+        )
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self._rack_content_frame.setLayout(content_layout)
+        root.addWidget(self._rack_content_frame, 1)
+
+        # Map rack modules to layout presets so buttons behave like the old dropdown
+        self._rack_module_presets = {
+            "mix": "queue_eq",
+            "queue": "queue_only",
+            "eq": "eq_only",
+            "search": "artist_info",
         }
-        for pid, w in self._rack_pages.items():
-            lay = QVBoxLayout()
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(0)
-            w.setLayout(lay)
-            title = {"queue": "Queue", "eq": "EQ", "search": "Search"}.get(pid, pid.title())
-            self._rack_output.add_page(pid, w, title)
-
-        # Left modules list
-        self._rack_view.add_module("queue", "Queue")
-        self._rack_view.add_module("eq", "EQ")
-        self._rack_view.add_module("search", "Search")
+        for module_id, title in [
+            ("mix", "Queue + EQ"),
+            ("queue", "Queue Only"),
+            ("eq", "EQ Only"),
+            ("search", "Artist Info"),
+        ]:
+            self._rack_view.add_module(module_id, title)
+        self._preset_to_rack_module = {preset: module for module, preset in self._rack_module_presets.items()}
         self._rack_view.module_selected.connect(self._on_rack_module_selected)
 
-        root.addWidget(self._rack_view)
-        root.addWidget(self._rack_output, 1)
         self._rack_container.setLayout(root)
 
     def _on_rack_module_selected(self, page_id: str):
         try:
-            self._rack_output.show_page(page_id)
+            preset = getattr(self, "_rack_module_presets", {}).get(page_id)
+            if preset:
+                self._apply_layout_preset(preset)
         except Exception:
             pass
 
@@ -4971,63 +5438,57 @@ Licensed under AGPL v3</p>
     def _enter_rack_mode(self):
         """Reparent key widgets into Rack pages and show rack container."""
         try:
-            # Prepare pages
-            queue_page = self._rack_pages.get("queue")
-            search_page = self._rack_pages.get("search")
+            if getattr(self, "_rack_container", None) is None:
+                self._build_rack_ui()
 
-            # Reparent queue table
-            if getattr(self, "table", None) is not None and queue_page is not None:
-                # Remember original parent to restore later
-                self._orig_table_parent = self.table.parent()
-                self.table.setParent(queue_page)
-                queue_page.layout().addWidget(self.table)
+            if not getattr(self, "_rack_content_frame", None):
+                return
 
-            # Reparent artist info widget (formerly search_bar)
-            if getattr(self, "artist_info_widget", None) is not None and search_page is not None:
-                self._orig_artist_info_parent = self.artist_info_widget.parent()
-                self.artist_info_widget.setParent(search_page)
-                search_page.layout().addWidget(self.artist_info_widget)
+            # Take whatever central widget is active (classic layout) and move it into the rack content area
+            current_central = self.takeCentralWidget()
+            if current_central is None:
+                current_central = getattr(self, "_classic_central", None)
+            if current_central is None:
+                return
 
-            # For EQ page, show a simple placeholder for now
-            from PySide6.QtWidgets import QLabel
-            eq_page = self._rack_pages.get("eq")
-            if eq_page is not None and eq_page.layout().count() == 0:
-                ph = QLabel("EQ page in Rack Mode (experimental) — coming next")
-                ph.setStyleSheet("color: #9ad04b; padding: 12px;")
-                eq_page.layout().addWidget(ph)
+            self._classic_central = current_central
 
-            # Swap central widget
-            self._prev_central = self.centralWidget()
+            content_layout = self._rack_content_frame.layout()
+            while content_layout.count():
+                item = content_layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.setParent(None)
+
+            current_central.setParent(self._rack_content_frame)
+            content_layout.addWidget(current_central)
+
             self.setCentralWidget(self._rack_container)
-            # Default to Queue page
-            self._rack_view.select("queue")
+
+            # Highlight the rack button that matches the current preset
+            current_preset = getattr(self, "_current_layout_preset", "queue_eq")
+            module = getattr(self, "_preset_to_rack_module", {}).get(current_preset)
+            if module:
+                self._rack_view.set_active(module)
         except Exception as e:
             print(f"[SidecarEQ] Enter Rack Mode failed: {e}")
 
     def _exit_rack_mode(self):
         """Restore classic central layout and reparent widgets back."""
         try:
-            # Restore queue table
-            if getattr(self, "table", None) is not None and hasattr(self, "_orig_table_parent") and self._orig_table_parent is not None:
-                self.table.setParent(self._orig_table_parent)
-                # Put table back into queue panel content
-                if hasattr(self, "queue_panel"):
-                    self.queue_panel.set_content(self.table)
-                    self.queue_panel.lock_content_height(True)
-                self._orig_table_parent = None
+            if getattr(self, "_classic_central", None) is None:
+                return
 
-            # Restore artist info widget
-            if getattr(self, "artist_info_widget", None) is not None and hasattr(self, "_orig_artist_info_parent") and self._orig_artist_info_parent is not None:
-                self.artist_info_widget.setParent(self._orig_artist_info_parent)
-                if hasattr(self, "search_panel"):
-                    self.search_panel.set_content(self.artist_info_widget)
-                    self.search_panel.lock_content_height(False)
-                self._orig_artist_info_parent = None
+            if self.centralWidget() is self._rack_container:
+                self.takeCentralWidget()
 
-            # Swap back to classic central widget
-            if getattr(self, "_prev_central", None) is not None:
-                self.setCentralWidget(self._prev_central)
-                self._prev_central = None
+            if getattr(self, "_rack_content_frame", None):
+                layout = self._rack_content_frame.layout()
+                if layout is not None:
+                    layout.removeWidget(self._classic_central)
+
+            self._classic_central.setParent(None)
+            self.setCentralWidget(self._classic_central)
         except Exception as e:
             print(f"[SidecarEQ] Exit Rack Mode failed: {e}")
     
