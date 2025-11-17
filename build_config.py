@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = "Sidecar EQ"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 BUNDLE_ID = "com.ohiomathteacher.sidecar-eq"
 AUTHOR = "Michael Todd Edwards"
 DESCRIPTION = "Music player with per-track EQ and volume memory"

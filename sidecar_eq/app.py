@@ -109,15 +109,92 @@ configure_logging()
 logger = get_logger(__name__)
 
 
+class MetadataLoaderWorker(QObject):
+    """Background worker for loading metadata asynchronously."""
+
+    metadata_loaded = Signal(int, dict)  # row_index, metadata_dict
+    finished = Signal()
+
+    def __init__(self, model, row_indices):
+        super().__init__()
+        self.model = model
+        self.row_indices = row_indices
+        self._should_stop = False
+
+    def stop(self):
+        """Signal the worker to stop processing."""
+        self._should_stop = True
+
+    def run(self):
+        """Extract metadata for all rows that need it."""
+        from .metadata_extractor import extract_comprehensive_metadata
+
+        for row_index in self.row_indices:
+            if self._should_stop:
+                break
+
+            # Extract metadata (this is the slow I/O operation)
+            metadata = self.model.extract_metadata_for_row(row_index)
+
+            if metadata:
+                # Emit signal with results
+                self.metadata_loaded.emit(row_index, metadata)
+
+        self.finished.emit()
+
+
+class ArtistMetadataWorker(QObject):
+    """Background worker for fetching artist metadata from network."""
+
+    finished = Signal(dict, str, str)  # artist_info, artwork_url, tracks_data
+    error = Signal(str)
+
+    def __init__(self, metadata_fetcher, artist, album):
+        super().__init__()
+        self.metadata_fetcher = metadata_fetcher
+        self.artist = artist
+        self.album = album
+
+    def run(self):
+        """Fetch artist metadata (runs in background thread)."""
+        try:
+            # Fetch artist info
+            artist_info = self.metadata_fetcher.get_artist_info(self.artist, self.album)
+
+            # Fetch artwork
+            artwork_url = None
+            if self.album:
+                artwork_url = self.metadata_fetcher.get_album_artwork(self.artist, self.album)
+
+            # Fetch tracklist
+            tracks_data = None
+            if self.album:
+                tracks_data = self.metadata_fetcher.get_album_tracklist(self.artist, self.album)
+
+            # Emit all results together
+            result = {
+                'artist_info': artist_info,
+                'artwork_url': artwork_url,
+                'tracks': tracks_data
+            }
+            self.finished.emit(result, self.artist, self.album)
+
+        except Exception as e:
+            print(f"[App] [BG] Failed to fetch artist metadata: {e}")
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+
 class CustomTableHeader(QHeaderView):
     """Custom table header with column management via context menu.
-    
+
     Features:
     - Right-click context menu to hide/show columns
     - Drag-to-reorder columns (built-in QHeaderView feature)
     - Visual indicator (⋮) on hover
     """
-    
+
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -125,18 +202,18 @@ class CustomTableHeader(QHeaderView):
         self.setSectionsMovable(True)  # Enable drag-to-reorder
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
-        
+
         # Store column names for menu
         self.column_names = [
             "Lookup", "Status", "Title", "Artist", "Album", "Year",
             "Label", "Producer", "Rating", "Bitrate", "Format",
             "Sample Rate", "Bit Depth", "Duration", "Play Count"
         ]
-    
+
     def _show_context_menu(self, pos: QPoint):
         """Show context menu with column visibility options."""
         logical_index = self.logicalIndexAt(pos)
-        
+
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {
@@ -158,10 +235,10 @@ class CustomTableHeader(QHeaderView):
                 margin: 4px 8px;
             }
         """)
-        
+
         # Add "Show/Hide Columns" submenu
         columns_menu = menu.addMenu("⋮ Columns")
-        
+
         # Don't allow hiding first two columns (Lookup and Status)
         for col in range(2, self.count()):
             col_name = self.column_names[col] if col < len(self.column_names) else f"Column {col}"
@@ -169,25 +246,25 @@ class CustomTableHeader(QHeaderView):
             action.setCheckable(True)
             action.setChecked(not self.isSectionHidden(col))
             action.triggered.connect(lambda checked, c=col: self._toggle_column(c, checked))
-        
+
         columns_menu.addSeparator()
-        
+
         # Add "Reset Columns" option
         reset_action = columns_menu.addAction("Reset to Default")
         reset_action.triggered.connect(self._reset_columns)
-        
+
         menu.exec(self.mapToGlobal(pos))
-    
+
     def _toggle_column(self, col: int, visible: bool):
         """Toggle column visibility."""
         self.setSectionHidden(col, not visible)
-    
+
     def _reset_columns(self):
         """Reset all columns to visible and default order."""
         # Show all columns
         for col in range(self.count()):
             self.setSectionHidden(col, False)
-        
+
         # Reset to original order (requires moving sections back)
         for visual_index in range(self.count()):
             logical_index = self.logicalIndex(visual_index)
@@ -281,19 +358,19 @@ class MainWindow(QMainWindow):
         self._current_duration = "00:00"
         self._current_position_ms = 0
         self._current_duration_ms = 0
-        
+
         # Master volume (multiplier for all tracks, default 100%)
         self._master_volume = 1.0  # 0.0 to 1.0
-        
+
         # Play state tracking for radio button indicators
         from .play_state_delegate import PlayStateDelegate
         self._play_state = PlayStateDelegate.PLAY_STATE_STOPPED
-        
+
         # Background analysis management
         self._analysis_worker = None
         self._pending_analysis_path = None
         self._user_adjusted_volume = False  # Track manual volume changes
-        
+
         # EQ debounce timer to prevent rapid updates
         self._eq_update_timer = QTimer()
         self._eq_update_timer.setSingleShot(True)
@@ -315,7 +392,7 @@ class MainWindow(QMainWindow):
             self.metadata_fetcher = None
 
         # Artist info panel will be created in UI setup - no search bar needed
-        
+
         # Model / table
         try:
             self.model = QueueModel()
@@ -326,20 +403,20 @@ class MainWindow(QMainWindow):
             self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)  # Enable editing
             self.table.clicked.connect(self._on_table_play)
             self.table.delete_key_pressed.connect(self.on_remove_selected)
-            
+
             # Install custom delegate for play state indicator (now column 1)
             from .play_state_delegate import PlayStateDelegate
             self.play_state_delegate = PlayStateDelegate(self.table)
             self.table.setItemDelegateForColumn(1, self.play_state_delegate)  # Status column
-            
+
             # Install star rating delegate for Rating column (column 8)
             self.star_rating_delegate = StarRatingDelegate(self.table)
             self.table.setItemDelegateForColumn(8, self.star_rating_delegate)  # Rating column
-            
+
             # Configure columns with custom header for column management
             custom_header = CustomTableHeader(Qt.Horizontal, self.table)
             self.table.setHorizontalHeader(custom_header)
-            
+
             header = self.table.horizontalHeader()
             header.setStretchLastSection(False)  # We'll stretch the Title column instead
             # Tooltips for icon-only columns
@@ -348,13 +425,13 @@ class MainWindow(QMainWindow):
             if self.model is not None:
                 self.model.setHeaderData(0, Qt.Horizontal, "Lookup", Qt.ToolTipRole)
                 self.model.setHeaderData(1, Qt.Horizontal, "Status", Qt.ToolTipRole)
-            
+
             # Column resize modes (15 columns total now: Lookup + Status + 13 data columns)
             # Make Title column (2) stretch to consume remaining width
             header.setSectionResizeMode(2, QHeaderView.Stretch)
             for col in range(3, 15):  # All other columns user-resizable
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
-            
+
             # Set initial column widths (optimized for new metadata fields)
             self.table.setColumnWidth(0, 40)   # 🌐 Lookup (globe icon)
             self.table.setColumnWidth(1, 30)   # ● Status (play state indicator)
@@ -371,7 +448,7 @@ class MainWindow(QMainWindow):
             self.table.setColumnWidth(12, 70)  # Bit Depth
             self.table.setColumnWidth(13, 60)  # Duration
             self.table.setColumnWidth(14, 80)  # Play Count
-            
+
             # Hide less essential columns by default (user can show via right-click menu)
             # Keep: Lookup, Status, Title, Artist, Album, Year, Rating
             # Hide: Label, Producer, Bitrate, Format, Sample Rate, Bit Depth, Duration, Play Count
@@ -383,21 +460,21 @@ class MainWindow(QMainWindow):
             self.table.setColumnHidden(12, True)  # Bit Depth
             self.table.setColumnHidden(13, True)  # Duration
             self.table.setColumnHidden(14, True)  # Play Count
-            
+
             # Enable word wrap in headers for better text fit
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            
+
             # Hide vertical header (row numbers) for cleaner look
             self.table.verticalHeader().setVisible(False)
             # Improve at-a-glance readability with alternating rows
             self.table.setAlternatingRowColors(True)
-            
+
             # Alternating row colors for better readability
             self.table.setAlternatingRowColors(True)
-            
+
             # Enable sorting by clicking column headers
             self.table.setSortingEnabled(True)
-            
+
             # Enable drag & drop for reordering rows
             self.table.setDragEnabled(True)
             self.table.setAcceptDrops(True)
@@ -408,7 +485,7 @@ class MainWindow(QMainWindow):
             # CRITICAL: Show line indicator between rows, not rectangle on row
             # The drop indicator shows as a LINE between items, not a rectangle highlighting the row
             # This is controlled by setDropIndicatorShown(True) and setDragDropOverwriteMode(False)
-            
+
             # Create container with restructured layout:
             # - Queue table (top, collapsible panel, resizable)
             # - Waveform/EQ (middle, collapsible panel, resizable)
@@ -435,7 +512,7 @@ class MainWindow(QMainWindow):
             central_layout.setContentsMargins(0, 0, 0, 0)
             # Add breathing room between collapsible panels to avoid cramped headers
             central_layout.setSpacing(12)
-            
+
             # Panel 1: Song Queue & Metadata (collapsible, accordion style)
             self.queue_panel = CollapsiblePanel("Song Queue & Metadata")
             self.queue_panel.set_content(self.table)
@@ -443,41 +520,42 @@ class MainWindow(QMainWindow):
             self.table.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             self.table.setMinimumHeight(100)
             central_layout.addWidget(self.queue_panel, stretch=0)  # Dynamic stretch applied later
-            
+
             # Panel 2: EQ & Waveform (collapsible, accordion style) - will be populated in _build_side_panel
             self.eq_panel = CollapsiblePanel("EQ & Waveform")
             central_layout.addWidget(self.eq_panel, stretch=0)  # Dynamic stretch applied later
-            
+
             # Panel 3: Now Playing Artist Info (collapsible, accordion style)
             self.search_panel = CollapsiblePanel("Now Playing")
-            
+
             # Create the artist info display
             self.artist_info_widget = self._create_artist_info_display()
             self.search_panel.set_content(self.artist_info_widget)
             self.search_panel.lock_content_height(False)  # Allow expansion for rich content
-            
+
             central_layout.addWidget(self.search_panel, stretch=0)  # Dynamic stretch applied later
-            
+
             # Store central layout for dynamic stretch updates
             self._central_layout = central_layout
-            
+
             # Load saved collapse states
             self._load_panel_states()
-            
+
             central_widget.setLayout(central_layout)
             self.setCentralWidget(central_widget)
             # Keep a handle to the classic central widget so we can swap to Rack Mode
             self._classic_central = central_widget
             self._rack_enabled = False
             self._rack_container = None
-            
+
             # Load saved queue state
             self._load_queue_state()
             self._sync_queue_panel_height()
-            
+
             # Auto-refresh metadata for existing queue items (background operation)
-            if self.model and hasattr(self.model, '_rows') and len(self.model._rows) > 0:
-                QTimer.singleShot(500, self._auto_refresh_metadata)
+            # DISABLED: causing UI responsiveness issues
+            # if self.model and hasattr(self.model, '_rows') and len(self.model._rows) > 0:
+            #     QTimer.singleShot(500, self._auto_refresh_metadata)
         except Exception as e:
             print(f"[SidecarEQ] Model/table setup failed: {e}")
             import traceback
@@ -524,18 +602,18 @@ class MainWindow(QMainWindow):
             pass
 
         self.setWindowTitle('Sidecar EQ')
-        
+
         # Fixed width, dynamic height calculated by _resize_to_fit_visible_panels
         self.setFixedWidth(1000)
-        
+
         # Disable window resize (prevents grip/border dragging)
         self.setWindowFlag(Qt.WindowType.MSWindowsFixedSizeDialogHint, True)
-        
+
         # Apply clean dark theme with modern fonts and compact styling
         if USE_MODERN_UI:
             # Get system font name for the table
             system_font = SystemFonts.get_system_font(size=12).family()
-            
+
             self.setStyleSheet(f"""
                 QMainWindow {{
                     background: {ModernColors.BACKGROUND_PRIMARY};
@@ -638,24 +716,24 @@ class MainWindow(QMainWindow):
                     border: none;
                 }
             """)
-    
+
         # Apply user interface preferences (alternating stripes, empty-state stripes, layout default)
         QTimer.singleShot(0, self._apply_ui_prefs_from_store)
 
     def showEvent(self, event):
         """Called when the window is shown. Auto-select first row if queue has items."""
         super().showEvent(event)
-        
+
         # Only do this once on first show
         if not hasattr(self, '_initial_selection_done'):
             self._initial_selection_done = True
-            
+
             # Use a timer to ensure everything is fully initialized
             QTimer.singleShot(100, self._do_initial_selection)
-            
+
             # Check for missing volumes after initialization
             QTimer.singleShot(1000, self._check_for_missing_volumes)
-    
+
     def _do_initial_selection(self):
         """Select and display info for the first track in the queue (without playing).
         If queue is empty, load a default track (Children of the Grave by Black Sabbath)."""
@@ -673,31 +751,31 @@ class MainWindow(QMainWindow):
             else:
                 # Queue is empty - load default track (MLK "I Have a Dream" speech)
                 print("[App] Queue is empty, loading default track: MLK 'I Have a Dream' speech")
-                
+
                 # Use bundled MLK speech file
                 from pathlib import Path
                 default_path = Path(__file__).parent / "MLKDream_64kb.mp3"
-                
+
                 if default_path.exists():
                     # Add the track to queue
                     count = self.model.add_paths([str(default_path)])
                     if count > 0:
                         print(f"[App] Added default track to queue: {default_path}")
-                        
+
                         # Auto-add to library
                         self._auto_add_to_library([str(default_path)])
-                        
+
                         # Select it
                         first_index = self.model.index(0, 2)
                         self.table.setCurrentIndex(first_index)
                         self.table.selectRow(0)
-                        
+
                         self._update_artist_info_display(str(default_path))
                 else:
                     print(f"[App] Default track not found at: {default_path}")
                     if hasattr(self, 'artist_info_widget'):
                         self.artist_info_widget.setVisible(False)
-                    
+
         except Exception as e:
             print(f"[App] Failed to do initial selection: {e}")
 
@@ -713,14 +791,14 @@ class MainWindow(QMainWindow):
             if index.column() == 0:
                 self._on_metadata_lookup(index.row())
                 return
-            
+
             # Column 1: Play state indicator
             if index.column() != 1:
                 return
-            
+
             clicked_row = index.row()
             from .play_state_delegate import PlayStateDelegate
-            
+
             # Case 1: Clicking the currently playing row - PAUSE it
             if clicked_row == self.current_row and self._play_state == PlayStateDelegate.PLAY_STATE_PLAYING:
                 self.player.pause()
@@ -730,7 +808,7 @@ class MainWindow(QMainWindow):
                 self._play_state = PlayStateDelegate.PLAY_STATE_PAUSED
                 # Stop LED meters when paused
                 self._update_led_meters_playback(False)
-                
+
             # Case 2: Clicking a paused row - RESUME playback
             elif clicked_row == self.current_row and self._play_state == PlayStateDelegate.PLAY_STATE_PAUSED:
                 self.player._player.play()
@@ -740,12 +818,12 @@ class MainWindow(QMainWindow):
                 self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
                 # Start LED meters when resumed
                 self._update_led_meters_playback(True)
-                
+
             # Case 3: Clicking a different row - PLAY that track from beginning
             else:
                 self._play_row(clicked_row)
                 self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
-                
+
         except Exception as e:
             print(f"[App] Error in _on_table_play: {e}")
             pass
@@ -753,7 +831,7 @@ class MainWindow(QMainWindow):
         """Status bar with repeat button."""
         sb = self.statusBar()
         sb.setSizeGripEnabled(False)  # Disable resize grip (window is fixed size)
-        
+
         # Repeat button (toggle)
         self._repeat_enabled = False
         self._repeat_btn = QPushButton("🔁 Repeat: Off")
@@ -779,7 +857,7 @@ class MainWindow(QMainWindow):
             }
         """)
         sb.addPermanentWidget(self._repeat_btn)
-        
+
         sb.showMessage("Ready")
 
 
@@ -806,7 +884,7 @@ class MainWindow(QMainWindow):
 
         # User seeking via waveform click → set player position AND start playback if stopped
         self.waveform.seekRequested.connect(self._on_waveform_seek)
-        
+
         # Wire collapsible panel signals to save state AND resize window (accordion style)
         if hasattr(self, 'queue_panel'):
             self.queue_panel.collapsed.connect(lambda _: self._on_panel_toggled())
@@ -814,20 +892,20 @@ class MainWindow(QMainWindow):
             self.eq_panel.collapsed.connect(lambda _: self._on_panel_toggled())
         if hasattr(self, 'search_panel'):
             self.search_panel.collapsed.connect(lambda _: self._on_panel_toggled())
-    
+
     def _on_waveform_seek(self, ms: int):
         """Handle seeking via waveform click. Start playback if stopped.
-        
+
         Args:
             ms: Seek position in milliseconds
         """
         from PySide6.QtMultimedia import QMediaPlayer
-        
+
         # Check if we have any tracks in queue
         if self.model.rowCount() == 0:
             self.statusBar().showMessage("Queue is empty - add tracks first", 3000)
             return
-        
+
         # If not playing, start playback FIRST, then seek
         if self.player._player.playbackState() != QMediaPlayer.PlayingState:
             # If no track loaded, load first selected/current row
@@ -855,7 +933,7 @@ class MainWindow(QMainWindow):
                 # Seek after starting playback (give player time to start)
                 QTimer.singleShot(100, lambda: self.player.set_position(ms))
                 return
-        
+
         # Already playing - seek immediately
         self.player.set_position(ms)
 
@@ -936,7 +1014,7 @@ class MainWindow(QMainWindow):
         """)
         self.music_dir_combo.activated.connect(self._on_music_dir_selected)
         tb.addWidget(self.music_dir_combo)
-        
+
         # Load recent music directories
         self._load_recent_music_dirs()
 
@@ -944,7 +1022,7 @@ class MainWindow(QMainWindow):
         # LCD-style scrolling display inspired by retro alarm clocks and digital displays
         tb.addSeparator()
         self.metadata_label = ScrollingLabel("♪ No track loaded")
-        
+
         # Style the scrolling label with green LCD-style colors
         self.metadata_label.setStyleSheet("""
             ScrollingLabel {
@@ -958,21 +1036,21 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
         """)
-        
+
         # Make it expand to fill available space
         from PySide6.QtWidgets import QSizePolicy as _SP
         self.metadata_label.setSizePolicy(_SP.Expanding, _SP.Preferred)
         self.metadata_label.setMinimumWidth(200)
-        
+
         # Configure scroll behavior (slower scroll, longer pause)
         self.metadata_label.setScrollSpeed(1)  # 1 pixel per frame (slow, smooth)
         self.metadata_label.setPauseDuration(2000)  # 2 second pause at start/end
-        
+
         tb.addWidget(self.metadata_label)
-        
+
         # Layout preset dropdown and Save button in toolbar
         tb.addSeparator()
-        
+
         # Layout preset dropdown (Overleaf-style)
         from PySide6.QtWidgets import QComboBox
         self._layout_preset_combo = QComboBox()
@@ -985,7 +1063,7 @@ class MainWindow(QMainWindow):
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
         self._layout_preset_combo.setToolTip("Select layout preset")
         self._layout_preset_combo.currentIndexChanged.connect(self._on_layout_preset_changed)
-        
+
         if USE_MODERN_UI:
             system_font = SystemFonts.get_system_font(size=10, weight="Medium").family()
             self._layout_preset_combo.setStyleSheet(f"""
@@ -1038,20 +1116,20 @@ class MainWindow(QMainWindow):
                     margin-right: 8px;
                 }
             """)
-        
+
         tb.addWidget(self._layout_preset_combo)
-        
+
     print("[SidecarEQ] Toolbar ready")
 
-    
-    
+
+
     def _create_artist_info_display(self):
         """Create the Now Playing artist info display widget with rich metadata."""
         try:
             from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget, QHBoxLayout, QPushButton
             from PySide6.QtCore import Qt, QSize
             from PySide6.QtGui import QPixmap
-            
+
             # Main scrollable container (parent to self to avoid floating windows)
             scroll = QScrollArea(self)
             scroll.setWidgetResizable(True)
@@ -1062,18 +1140,18 @@ class MainWindow(QMainWindow):
                     border: none;
                 }
             """)
-            
+
             container = QWidget(scroll)
             container.setStyleSheet("""
                 QWidget {
                     background: #1e1e1e;
                 }
             """)
-            
+
             layout = QVBoxLayout()
             layout.setSpacing(15)
             layout.setContentsMargins(20, 20, 20, 20)
-            
+
             # --- ALBUM TRACKLIST (TOP, 2 COLUMNS) ---
             header_row = QHBoxLayout()
             header_row.setContentsMargins(0,0,0,0)
@@ -1087,6 +1165,8 @@ class MainWindow(QMainWindow):
                     font-weight: bold;
                     color: #ffffff;
                     padding-bottom: 8px;
+                    background: transparent;
+                    border: none;
                 }
             """)
             header_row.addWidget(tracklist_header)
@@ -1111,7 +1191,7 @@ class MainWindow(QMainWindow):
             header_row.addWidget(self.add_artist_btn)
 
             layout.addLayout(header_row)
-            
+
             # Tracklist container with 2-column grid
             self.tracklist_container = QWidget()
             from PySide6.QtWidgets import QGridLayout
@@ -1122,17 +1202,17 @@ class MainWindow(QMainWindow):
             self.tracklist_container.setLayout(self.tracklist_layout)
             self.tracklist_container.setVisible(False)  # Hidden until loaded
             layout.addWidget(self.tracklist_container)
-            
+
             # --- DIVIDER ---
             divider = QFrame()
             divider.setFrameShape(QFrame.HLine)
             divider.setStyleSheet("background: #444; max-height: 1px; margin-top: 5px; margin-bottom: 10px;")
             layout.addWidget(divider)
-            
+
             # --- MAIN CONTENT: Album art + Bio side-by-side ---
             content_layout = QHBoxLayout()
             content_layout.setSpacing(20)
-            
+
             # Left side: Album artwork (fixed size, smaller)
             self.album_art_label = QLabel()
             self.album_art_label.setFixedSize(QSize(200, 200))
@@ -1149,34 +1229,37 @@ class MainWindow(QMainWindow):
             placeholder_pixmap.fill(Qt.transparent)
             self.album_art_label.setPixmap(placeholder_pixmap)
             content_layout.addWidget(self.album_art_label, 0, Qt.AlignTop)
-            
+
             # Right side: Bio text (expanding)
             bio_container = QWidget()
+            bio_container.setStyleSheet("QWidget { background: transparent; border: none; }")
             bio_layout = QVBoxLayout()
             bio_layout.setContentsMargins(0, 0, 0, 0)
             bio_layout.setSpacing(10)
-            
+
             # --- FONT SIZE CONTROLS ---
             font_controls = QWidget()
+            font_controls.setStyleSheet("QWidget { background: transparent; border: none; }")
             font_controls_layout = QHBoxLayout()
             font_controls_layout.setContentsMargins(0, 0, 0, 5)
             font_controls_layout.setSpacing(8)
-            
+
             font_label = QLabel("Text Size:")
             font_label.setStyleSheet("color: #888; font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;")
             font_controls_layout.addWidget(font_label)
-            
+
             # Font size state (14pt is default/medium)
             self.bio_font_size = 14
-            
+
             # Small button
             small_btn = QPushButton("S")
             small_btn.setFixedSize(30, 24)
+            small_btn.setFlat(True)
             small_btn.setStyleSheet("""
                 QPushButton {
                     background: #2a2a2a;
                     color: #888;
-                    border: 1px solid #444;
+                    border: 0px;
                     border-radius: 4px;
                     font-size: 11px;
                     font-weight: bold;
@@ -1188,18 +1271,23 @@ class MainWindow(QMainWindow):
                 QPushButton:pressed {
                     background: #1a1a1a;
                 }
+                QPushButton:focus {
+                    outline: none;
+                    border: 0px;
+                }
             """)
             small_btn.clicked.connect(lambda: self._set_bio_font_size(12))
             font_controls_layout.addWidget(small_btn)
-            
+
             # Medium button
             medium_btn = QPushButton("M")
             medium_btn.setFixedSize(30, 24)
+            medium_btn.setFlat(True)
             medium_btn.setStyleSheet("""
                 QPushButton {
                     background: #4a9eff;
                     color: #fff;
-                    border: 1px solid #4a9eff;
+                    border: 0px;
                     border-radius: 4px;
                     font-size: 11px;
                     font-weight: bold;
@@ -1210,19 +1298,24 @@ class MainWindow(QMainWindow):
                 QPushButton:pressed {
                     background: #3a8eef;
                 }
+                QPushButton:focus {
+                    outline: none;
+                    border: 0px;
+                }
             """)
             medium_btn.clicked.connect(lambda: self._set_bio_font_size(14))
             font_controls_layout.addWidget(medium_btn)
             self.font_size_medium_btn = medium_btn  # Save reference for highlighting
-            
+
             # Large button
             large_btn = QPushButton("L")
             large_btn.setFixedSize(30, 24)
+            large_btn.setFlat(True)
             large_btn.setStyleSheet("""
                 QPushButton {
                     background: #2a2a2a;
                     color: #888;
-                    border: 1px solid #444;
+                    border: 0px;
                     border-radius: 4px;
                     font-size: 11px;
                     font-weight: bold;
@@ -1234,21 +1327,25 @@ class MainWindow(QMainWindow):
                 QPushButton:pressed {
                     background: #1a1a1a;
                 }
+                QPushButton:focus {
+                    outline: none;
+                    border: 0px;
+                }
             """)
             large_btn.clicked.connect(lambda: self._set_bio_font_size(16))
             font_controls_layout.addWidget(large_btn)
-            
+
             # Store button references for highlighting
             self.font_size_buttons = {
                 12: small_btn,
                 14: medium_btn,
                 16: large_btn
             }
-            
+
             font_controls_layout.addStretch()
             font_controls.setLayout(font_controls_layout)
             bio_layout.addWidget(font_controls)
-            
+
             # --- ARTIST BIO (scrollable, webpage-like) ---
             self.artist_bio_label = QLabel("")
             self.artist_bio_label.setStyleSheet(f"""
@@ -1267,33 +1364,48 @@ class MainWindow(QMainWindow):
             self.artist_bio_label.setVisible(False)  # Hidden until loaded
             self.artist_bio_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             bio_layout.addWidget(self.artist_bio_label)
-            
-            # --- GENRES / TAGS ---
-            self.genres_label = QLabel("")
-            self.genres_label.setStyleSheet("""
+
+            # --- RELATED ARTISTS (2 COLUMNS) ---
+            from PySide6.QtWidgets import QGridLayout
+
+            related_header = QLabel("Related Artists")
+            related_header.setStyleSheet("""
                 QLabel {
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    font-size: 11px;
-                    color: #888;
-                    padding: 10px 0px 0px 0px;
+                    font-size: 13px;
+                    font-weight: bold;
+                    color: #ffffff;
+                    padding: 10px 0px 5px 0px;
                 }
             """)
-            self.genres_label.setWordWrap(True)
-            self.genres_label.setVisible(False)
-            bio_layout.addWidget(self.genres_label)
-            
+            related_header.setVisible(False)
+            bio_layout.addWidget(related_header)
+
+            # Grid for 2-column layout (up to 10 artists = 5 rows × 2 cols)
+            self.related_artists_container = QWidget()
+            self.related_artists_layout = QGridLayout()
+            self.related_artists_layout.setContentsMargins(0, 0, 0, 0)
+            self.related_artists_layout.setSpacing(4)
+            self.related_artists_container.setLayout(self.related_artists_layout)
+            self.related_artists_container.setVisible(False)
+            bio_layout.addWidget(self.related_artists_container)
+
+            # Store references for easy updates
+            self.related_header = related_header
+            self.related_artist_labels = []
+
             bio_container.setLayout(bio_layout)
             content_layout.addWidget(bio_container, 1)  # Stretch to fill
-            
+
             layout.addLayout(content_layout)
-            
+
             # Add stretch to push content to top
             layout.addStretch()
-            
+
             container.setLayout(layout)
             scroll.setWidget(container)
             scroll.setVisible(False)  # Hidden until a track plays
-            
+
             return scroll
         except Exception as e:
             print(f"ERROR in _create_artist_info_display: {e}")
@@ -1302,16 +1414,16 @@ class MainWindow(QMainWindow):
             # Return a dummy widget so the app doesn't crash
             dummy = QScrollArea(self)
             return dummy
-    
+
     def _set_bio_font_size(self, size):
         """Change the font size for the artist bio text.
-        
+
         Args:
             size: Font size in pixels (12, 14, or 16)
         """
         try:
             self.bio_font_size = size
-            
+
             # Update bio label style
             self.artist_bio_label.setStyleSheet(f"""
                 QLabel {{
@@ -1323,7 +1435,7 @@ class MainWindow(QMainWindow):
                     background: transparent;
                 }}
             """)
-            
+
             # Update button highlighting
             for btn_size, btn in self.font_size_buttons.items():
                 if btn_size == size:
@@ -1363,21 +1475,21 @@ class MainWindow(QMainWindow):
                             background: #1a1a1a;
                         }
                     """)
-            
+
             print(f"[App] Bio font size changed to {size}px")
-            
+
         except Exception as e:
             print(f"[App] Failed to change bio font size: {e}")
-    
+
     def _update_artist_info_display(self, path):
         """Update the Now Playing artist info display with rich metadata from the currently playing track.
-        
+
         Args:
             path: Path to the track file or URL
         """
         if not hasattr(self, 'artist_info_widget') or not self.artist_info_widget:
             return
-        
+
         try:
             # Get metadata for the track
             track_info = None
@@ -1395,7 +1507,7 @@ class MainWindow(QMainWindow):
                 # Hide if no track info available
                 self.artist_info_widget.setVisible(False)
                 return
-            
+
             # Extract metadata (no need to update labels - info is in LED display)
             artist = track_info.get('artist', 'Unknown Artist')
             album = track_info.get('album', '')
@@ -1403,63 +1515,96 @@ class MainWindow(QMainWindow):
             # Remember current context for actions like Add Artist to Library
             self._current_artist_for_metadata = artist
             self._current_album_for_metadata = album
-            
+
             # Fetch artist metadata in background
             if hasattr(self, 'metadata_fetcher') and self.metadata_fetcher and artist and artist != 'Unknown Artist':
                 # Show loading state
                 self.artist_bio_label.setText(f'<span style="color: #999; font-style: italic;">Loading artist info for {artist}...</span>')
-                self.genres_label.setText("")
-                
+                self._clear_related_artists()
+
                 # Fetch in background (method handles threading internally)
                 self._fetch_artist_metadata(artist, album)
             else:
                 # No metadata fetcher or unknown artist - clear extra fields
                 self.artist_bio_label.setText("")
-                self.genres_label.setText("")
+                self._clear_related_artists()
                 self.album_art_label.clear()
                 self.album_art_label.setText("No artwork")
                 self.tracklist_container.setVisible(False)
-            
+
             # Show the display
             self.artist_info_widget.setVisible(True)
-            
+
         except Exception as e:
             print(f"[App] Failed to update artist info display: {e}")
             import traceback
             traceback.print_exc()
             self.artist_info_widget.setVisible(False)
-    
+
     def _fetch_artist_metadata(self, artist, album):
         """Fetch artist metadata (bio, genres, artwork) from external sources.
-        
+
         This runs in a background thread to avoid blocking UI.
-        
+
         Args:
             artist: Artist name
             album: Album name (optional)
         """
+        # Cancel any existing metadata fetch
+        if hasattr(self, '_artist_metadata_thread') and self._artist_metadata_thread is not None:
+            try:
+                if self._artist_metadata_thread.isRunning():
+                    self._artist_metadata_thread.quit()
+                    self._artist_metadata_thread.wait()
+            except RuntimeError:
+                # Thread already deleted, that's fine
+                pass
+            self._artist_metadata_thread = None
+
+        # Create worker and thread
+        self._artist_metadata_thread = QThread()
+        self._artist_metadata_worker = ArtistMetadataWorker(self.metadata_fetcher, artist, album)
+        self._artist_metadata_worker.moveToThread(self._artist_metadata_thread)
+
+        # Connect signals (using QueuedConnection to ensure main thread execution)
+        self._artist_metadata_worker.finished.connect(
+            self._on_artist_metadata_received,
+            Qt.QueuedConnection
+        )
+        self._artist_metadata_worker.error.connect(self._on_artist_metadata_error, Qt.QueuedConnection)
+        self._artist_metadata_thread.started.connect(self._artist_metadata_worker.run)
+
+        # Clean up thread when done
+        def cleanup():
+            self._artist_metadata_thread = None
+
+        self._artist_metadata_worker.finished.connect(self._artist_metadata_thread.quit)
+        self._artist_metadata_worker.error.connect(self._artist_metadata_thread.quit)
+        self._artist_metadata_thread.finished.connect(self._artist_metadata_thread.deleteLater)
+        self._artist_metadata_thread.finished.connect(cleanup)
+
+        # Start the thread
+        self._artist_metadata_thread.start()
+
+    def _on_artist_metadata_received(self, result, artist, album):
+        """Handle artist metadata received from background thread.
+
+        This runs on the main thread due to Qt.QueuedConnection.
+        """
         try:
-            print(f"[App] Fetching metadata for: {artist} - {album}")
-            
-            # Fetch artist info (this is the slow network operation)
-            artist_info = self.metadata_fetcher.get_artist_info(artist, album)
-            
-            print(f"[App] Artist info received: {artist_info.keys() if artist_info else 'None'}")
-            
-            # Prepare bio text
-            bio_html = None
+            artist_info = result.get('artist_info')
+            artwork_url = result.get('artwork_url')
+            tracks = result.get('tracks')
+
+            # Update bio
             if artist_info and artist_info.get('bio'):
                 bio_text = artist_info['bio']
-                # Remove excessive whitespace
                 bio_text = ' '.join(bio_text.split())
-                # Don't truncate - let it flow like a webpage
-                
-                # Escape HTML entities
+
                 from html import escape
                 bio_html = escape(bio_text)
                 print(f"[App] Bio prepared: {len(bio_text)} chars")
-                
-                # Update bio label (no inline styles, use CSS from setStyleSheet)
+
                 self.artist_bio_label.setText(bio_html)
                 self.artist_bio_label.setVisible(True)
                 print(f"[App] ✅ Bio label updated")
@@ -1467,57 +1612,44 @@ class MainWindow(QMainWindow):
                 print(f"[App] No bio found for {artist}")
                 self.artist_bio_label.setText(f'<span style="color: #999; font-style: italic;">No biography available for {artist}</span>')
                 self.artist_bio_label.setVisible(True)
-            
-            # Update genres
-            if artist_info and artist_info.get('genres'):
-                genres = artist_info['genres'][:7]  # Limit to 7 genres
-                genres_html = ' '.join([
-                    f'<span style="background: #3a3a3a; color: #4a9eff; padding: 6px 12px; '
-                    f'border-radius: 14px; font-size: 11pt; margin-right: 8px; display: inline-block; margin-bottom: 6px;">{g}</span>' 
-                    for g in genres
-                ])
-                self.genres_label.setText(genres_html)
-                self.genres_label.setVisible(True)
-                print(f"[App] ✅ Genres displayed: {genres}")
+
+            # Update related artists
+            if artist_info and artist_info.get('similar_artists'):
+                self._populate_related_artists(artist_info['similar_artists'])
             else:
-                self.genres_label.setText("")
-                self.genres_label.setVisible(False)
-            
-            # Fetch and display album artwork
-            if album:
-                print(f"[App] Fetching artwork for: {album}")
-                artwork_url = self.metadata_fetcher.get_album_artwork(artist, album)
-                if artwork_url:
-                    print(f"[App] Artwork URL: {artwork_url}")
-                    self._load_album_artwork(artwork_url)
-                else:
-                    print(f"[App] No artwork found")
-                    self.album_art_label.clear()
-                    self.album_art_label.setText("No artwork")
-                
-                # Fetch and display album tracklist
-                print(f"[App] Fetching tracklist for: {album}")
-                tracks = self.metadata_fetcher.get_album_tracklist(artist, album)
-                if tracks:
-                    self._populate_tracklist(tracks, artist, album)
-                else:
-                    print(f"[App] No tracklist found")
-                    self.tracklist_container.setVisible(False)
+                self._clear_related_artists()
+
+            # Update artwork
+            if artwork_url:
+                print(f"[App] Loading artwork: {artwork_url}")
+                self._load_album_artwork(artwork_url)
             else:
                 self.album_art_label.clear()
-                self.album_art_label.setText("No album")
+                self.album_art_label.setText("No artwork" if album else "No album")
+
+            # Update tracklist - schedule on main thread's event loop
+            if tracks:
+                # Create a proper closure and schedule it
+                from PySide6.QtCore import QTimer
+                def do_populate():
+                    self._populate_tracklist(tracks, artist, album)
+                QTimer.singleShot(0, do_populate)
+            else:
                 self.tracklist_container.setVisible(False)
-                
+
         except Exception as e:
-            print(f"[App] Failed to fetch artist metadata: {e}")
+            print(f"[App] Failed to process artist metadata: {e}")
             import traceback
             traceback.print_exc()
-            self.artist_bio_label.setText(f'<p style="color: #ff6b6b;">Error loading artist info: {str(e)}</p>')
-            self.artist_bio_label.setVisible(True)
-    
+
+    def _on_artist_metadata_error(self, error_msg):
+        """Handle artist metadata fetch error."""
+        self.artist_bio_label.setText(f'<p style="color: #ff6b6b;">Error loading artist info: {error_msg}</p>')
+        self.artist_bio_label.setVisible(True)
+
     def _populate_tracklist(self, tracks, artist, album):
         """Populate the tracklist with clickable track buttons in a 2-column grid.
-        
+
         Args:
             tracks: List of track dicts with 'number', 'title', 'length' keys
             artist: Artist name
@@ -1553,14 +1685,14 @@ class MainWindow(QMainWindow):
                                         available_titles.add(_norm_title(song.title))
             except Exception as _e:
                 pass
-            
+
             # Add each track as a clickable button in 2 columns
             for idx, track in enumerate(tracks):
                 track_btn = QPushButton()
                 track_num = track.get('number', '?')
                 track_title = track.get('title', 'Unknown')
                 track_length = track.get('length')
-                
+
                 # Format length if available (convert ms to mm:ss)
                 length_str = ""
                 if track_length:
@@ -1568,7 +1700,7 @@ class MainWindow(QMainWindow):
                     minutes = total_seconds // 60
                     seconds = total_seconds % 60
                     length_str = f" • {minutes}:{seconds:02d}"
-                
+
                 track_btn.setText(f"{track_num}. {track_title}{length_str}")
                 track_btn.setStyleSheet("""
                     QPushButton {
@@ -1601,22 +1733,127 @@ class MainWindow(QMainWindow):
                     track_btn.setToolTip("Not in your library yet. Click 'Add Artist to Library' to import.")
                 else:
                     track_btn.setToolTip("Click to add to top of queue and play")
-                
+
                 # Connect click handler: add to TOP of queue and PLAY immediately
                 track_btn.clicked.connect(
                     lambda checked, t=track_title, a=artist, al=album: self._add_track_and_play(t, a, al)
                 )
-                
+
                 # Calculate row and column for 2-column layout
                 row = idx // 2
                 col = idx % 2
                 self.tracklist_layout.addWidget(track_btn, row, col)
-            
+
             self.tracklist_container.setVisible(True)
             print(f"[App] ✅ Populated tracklist with {len(tracks)} tracks in 2 columns")
-            
+
         except Exception as e:
             print(f"[App] Failed to populate tracklist: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _clear_related_artists(self):
+        """Clear the related artists display."""
+        # Clear existing labels
+        while self.related_artists_layout.count():
+            child = self.related_artists_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        self.related_artist_labels.clear()
+        self.related_header.setVisible(False)
+        self.related_artists_container.setVisible(False)
+
+    def _populate_related_artists(self, similar_artists):
+        """Populate the related artists section with clickable artist names.
+
+        Only shows artists that exist in the user's library.
+
+        Args:
+            similar_artists: List of artist name strings (up to 10)
+        """
+        try:
+            self._clear_related_artists()
+
+            if not similar_artists:
+                return
+
+            # Filter to only show artists that exist in the library
+            artists_in_library = []
+            if self.indexer and self.indexer.library:
+                for artist_name in similar_artists:
+                    # Check if this artist exists in the library (case-insensitive)
+                    artist_name_lower = artist_name.lower()
+                    for lib_artist_name in self.indexer.library.artists.keys():
+                        if lib_artist_name.lower() == artist_name_lower:
+                            artists_in_library.append(lib_artist_name)
+                            break
+
+            if not artists_in_library:
+                # No related artists in library - don't show the section
+                return
+
+            # Limit to 10 artists
+            artists_to_show = artists_in_library[:10]
+
+            # Populate grid (2 columns, 5 rows max)
+            for idx, artist_name in enumerate(artists_to_show):
+                row = idx // 2
+                col = idx % 2
+
+                # Create clickable label
+                artist_label = QLabel(f'• <a href="#" style="color: #4a9eff; text-decoration: none;">{artist_name}</a>')
+                artist_label.setStyleSheet("""
+                    QLabel {
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                        font-size: 12px;
+                        color: #e0e0e0;
+                        padding: 2px 0px;
+                    }
+                    QLabel a:hover {
+                        color: #6bb6ff;
+                        text-decoration: underline;
+                    }
+                """)
+                artist_label.setTextFormat(Qt.RichText)
+                artist_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                artist_label.linkActivated.connect(lambda _, name=artist_name: self._on_related_artist_clicked(name))
+
+                self.related_artists_layout.addWidget(artist_label, row, col)
+                self.related_artist_labels.append(artist_label)
+
+            # Show the section
+            self.related_header.setVisible(True)
+            self.related_artists_container.setVisible(True)
+            print(f"[App] ✅ Related artists displayed: {len(artists_to_show)} artists")
+
+        except Exception as e:
+            print(f"[App] Failed to populate related artists: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_related_artist_clicked(self, artist_name):
+        """Handle clicking on a related artist name.
+
+        Args:
+            artist_name: Name of the clicked artist
+        """
+        try:
+            print(f"[App] Related artist clicked: {artist_name}")
+            # For now, just update the artist info display
+            # In the future, could search library or trigger a search
+            self._current_artist_for_metadata = artist_name
+            self._current_album_for_metadata = ""
+
+            # Show loading state
+            self.artist_bio_label.setText(f'<span style="color: #999; font-style: italic;">Loading artist info for {artist_name}...</span>')
+            self._clear_related_artists()
+
+            # Fetch metadata
+            self._fetch_artist_metadata(artist_name, None)
+
+        except Exception as e:
+            print(f"[App] Failed to handle related artist click: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1663,10 +1900,10 @@ class MainWindow(QMainWindow):
             print(f"[App] Failed to start Add Artist to Library: {e}")
             if hasattr(self, 'add_artist_btn'):
                 self.add_artist_btn.setEnabled(True)
-    
+
     def _add_track_and_play(self, track_title, artist, album):
         """Add clicked song to TOP of queue and play it immediately.
-        
+
         Strategy:
         1) If the song is already in the queue, move that row to index 0.
         2) Else, try to resolve a file path from the indexed library; add it, then move to 0.
@@ -1818,25 +2055,25 @@ class MainWindow(QMainWindow):
             print(f"[App] Failed to add-and-play: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def _load_album_artwork(self, url):
         """Download and display album artwork from URL.
-        
+
         Args:
             url: URL to the album artwork image
         """
         try:
             import requests
             from io import BytesIO
-            
+
             # Download image
             response = requests.get(url, timeout=5)
             response.raise_for_status()
-            
+
             # Load into QPixmap
             pixmap = QPixmap()
             pixmap.loadFromData(response.content)
-            
+
             if not pixmap.isNull():
                 # Scale to fit 180x180 while maintaining aspect ratio
                 scaled_pixmap = pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1844,12 +2081,12 @@ class MainWindow(QMainWindow):
             else:
                 self.album_art_label.clear()
                 self.album_art_label.setText("Invalid image")
-                
+
         except Exception as e:
             print(f"[App] Failed to load album artwork: {e}")
             self.album_art_label.clear()
             self.album_art_label.setText("Load failed")
-    
+
     def _build_side_panel(self):
         """
         Build the waveform/EQ panel.
@@ -1865,20 +2102,20 @@ class MainWindow(QMainWindow):
         container_layout = QHBoxLayout()
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(4)  # Small gap between panels
-        
+
         # === LEFT PANEL: Waveform + Volume Control ===
         waveform_panel = QWidget()
         waveform_layout = QVBoxLayout()
         waveform_layout.setContentsMargins(8, 8, 8, 8)
         waveform_layout.setSpacing(8)
-        
+
         # Create waveform widget (moved from status bar)
         from .ui import WaveformProgress
         self.waveform = WaveformProgress()
         self.waveform.setMinimumHeight(80)   # Allow it to shrink more (was 150)
         self.waveform.setMaximumHeight(200)  # Still cap maximum
         waveform_layout.addWidget(self.waveform, stretch=1)  # Give it stretch priority
-        
+
         # Add spacing between waveform and volume controls
         waveform_layout.addSpacing(24)
 
@@ -1888,26 +2125,26 @@ class MainWindow(QMainWindow):
         volume_sub_layout = QVBoxLayout()
         volume_sub_layout.setContentsMargins(0, 0, 0, 0)
         volume_sub_layout.setSpacing(6)  # Proper spacing between volume elements
-        
+
         # Volume header with label and value display (compact)
         vol_header_layout = QHBoxLayout()
         vol_header_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         volume_label = QLabel("VOLUME")
         volume_label.setAlignment(Qt.AlignLeft)
         volume_label.setStyleSheet("color: #ff4d4d; font-size: 9px; font-family: 'Helvetica'; font-weight: bold; background: transparent; border: none;")
         vol_header_layout.addWidget(volume_label)
-        
+
         vol_header_layout.addStretch()
-        
+
         # Volume value display (0-10 scale)
         self._volume_value_label = QLabel("5.0")  # Default to 5.0 (50%)
         self._volume_value_label.setAlignment(Qt.AlignRight)
         self._volume_value_label.setStyleSheet("color: #ff8888; font-size: 9px; font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif; font-weight: normal; background: transparent; border: none;")
         vol_header_layout.addWidget(self._volume_value_label)
-        
+
         volume_sub_layout.addLayout(vol_header_layout)
-        
+
         # Volume slider (compact height)
         from .ui import BeamSlider
         self._volume_slider = BeamSlider(vertical=False, core_color=(220, 60, 60), glow_color=(220, 60, 60, 140), handle_color=(255, 200, 200))
@@ -1919,10 +2156,10 @@ class MainWindow(QMainWindow):
             pass
         self._volume_slider.valueChanged.connect(self._on_volume_changed_realtime)
         volume_sub_layout.addWidget(self._volume_slider)
-        
+
         volume_container.setLayout(volume_sub_layout)
         waveform_layout.addWidget(volume_container, stretch=0)  # Volume doesn't stretch
-        
+
         waveform_layout.addStretch()  # Push everything to top when panel is tall
 
         waveform_panel.setLayout(waveform_layout)
@@ -1933,7 +2170,7 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
         """)
-        
+
         # === RIGHT PANEL: EQ Sliders (compact layout) ===
         eq_panel = QWidget()
         eq_panel.setStyleSheet("""
@@ -1944,11 +2181,11 @@ class MainWindow(QMainWindow):
             }
         """)
         self._eq_bg_widget = eq_panel  # Store reference for opacity menu
-        
+
         eq_main_layout = QVBoxLayout()
         eq_main_layout.setContentsMargins(8, 8, 8, 8)
         eq_main_layout.setSpacing(4)
-        
+
         # === EQ CONTROLS at top (Preset dropdown + Enable/Disable toggle) ===
         from PySide6.QtWidgets import QComboBox, QPushButton
         eq_controls_container = QWidget()
@@ -1956,18 +2193,18 @@ class MainWindow(QMainWindow):
         eq_controls_layout = QVBoxLayout()
         eq_controls_layout.setContentsMargins(0, 0, 0, 0)
         eq_controls_layout.setSpacing(6)
-        
+
         # EQ header with label and enable/disable toggle (matching volume layout)
         eq_header_layout = QHBoxLayout()
         eq_header_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         eq_label = QLabel("EQUALIZER")
         eq_label.setAlignment(Qt.AlignLeft)
         eq_label.setStyleSheet("color: #6699cc; font-size: 9px; font-family: 'Helvetica'; font-weight: bold; background: transparent; border: none;")
         eq_header_layout.addWidget(eq_label)
-        
+
         eq_header_layout.addStretch()
-        
+
         # EQ Enable/Disable toggle button
         self._eq_enabled = True  # Track EQ state
         self._eq_toggle_btn = QPushButton("ON")
@@ -2000,9 +2237,9 @@ class MainWindow(QMainWindow):
             }
         """)
         eq_header_layout.addWidget(self._eq_toggle_btn)
-        
+
         eq_controls_layout.addLayout(eq_header_layout)
-        
+
         # EQ Preset dropdown (matching volume slider width/style)
         self._eq_preset_combo = QComboBox()
         self._eq_preset_combo.addItems([
@@ -2020,7 +2257,7 @@ class MainWindow(QMainWindow):
         self._eq_preset_combo.setCurrentIndex(0)  # Default to Flat
         self._eq_preset_combo.setFixedHeight(20)
         self._eq_preset_combo.currentIndexChanged.connect(self._on_eq_preset_changed)
-        
+
         if USE_MODERN_UI:
             system_font = SystemFonts.get_system_font(size=9).family()
             self._eq_preset_combo.setStyleSheet(f"""
@@ -2071,21 +2308,21 @@ class MainWindow(QMainWindow):
                     margin-right: 6px;
                 }
             """)
-        
+
         eq_controls_layout.addWidget(self._eq_preset_combo)
-        
+
         eq_controls_container.setLayout(eq_controls_layout)
         eq_main_layout.addWidget(eq_controls_container)
-        
+
         # Add spacing to match volume panel layout
         eq_main_layout.addSpacing(24)
-        
+
         # EQ sliders container (7 sliders only - no volume)
         from PySide6.QtWidgets import QHBoxLayout as HB, QCheckBox
         eq_x_offset = 12
-        
+
         # Removed save buttons - now in waveform/volume panel
-        
+
         eq_layout = HB()
         eq_layout.setContentsMargins(eq_x_offset, 14, eq_x_offset, 14)
         eq_layout.setSpacing(16)  # Slightly more compact
@@ -2153,7 +2390,7 @@ class MainWindow(QMainWindow):
             combo_layout = QVBoxLayout()
             combo_layout.setContentsMargins(0, 0, 0, 0)
             combo_layout.setSpacing(0)
-            
+
             # LED meter behind slider (will be Z-order below)
             from .ui import LEDMeter
             led_meter = LEDMeter(color_scheme='blue', num_segments=20)
@@ -2161,7 +2398,7 @@ class MainWindow(QMainWindow):
             led_meter.setMaximumWidth(18)
             led_meter.enable_simulation(False)  # Start disabled (no audio playing initially)
             self._led_meters.append(led_meter)
-            
+
             # Use BeamSlider for all EQ bands for consistent look
             try:
                 s = BeamSlider()
@@ -2179,7 +2416,7 @@ class MainWindow(QMainWindow):
                 s.valueChanged.connect(lambda val, idx=i: self._on_eq_label_changed(val, idx))
                 s.sliderReleased.connect(self._on_eq_released)
                 s.setFixedHeight(120)
-            
+
             # Stack LED meter and slider using QStackedLayout for true overlay
             from PySide6.QtWidgets import QStackedLayout
             stack_container = QWidget()
@@ -2189,7 +2426,7 @@ class MainWindow(QMainWindow):
             stack_layout.addWidget(led_meter)  # Background layer
             stack_layout.addWidget(s)  # Foreground layer (slider)
             stack_container.setLayout(stack_layout)
-            
+
             slider_layout.addWidget(stack_container)
             self._eq_sliders.append(s)
 
@@ -2197,7 +2434,7 @@ class MainWindow(QMainWindow):
             eq_layout.addWidget(slider_container)
 
         eq_main_layout.addLayout(eq_layout)
-        
+
         # Add labels: 7 EQ frequency labels only
         freq_layout = HB()
         freq_layout.setContentsMargins(eq_x_offset, 0, eq_x_offset, 8)
@@ -2208,14 +2445,14 @@ class MainWindow(QMainWindow):
             label.setStyleSheet("color: #808080; font-size: 8px; font-family: 'Helvetica Neue', 'Helvetica', 'Arial Narrow', 'Arial', sans-serif; font-weight: normal; background: transparent; border: none;")
             freq_layout.addWidget(label)
         eq_main_layout.addLayout(freq_layout)
-        
+
         eq_panel.setLayout(eq_main_layout)
-        
+
         # Add panels to horizontal layout (50/50 split)
         container_layout.addWidget(waveform_panel, stretch=1)
         container_layout.addWidget(eq_panel, stretch=1)
         container.setLayout(container_layout)
-        
+
         # Set container as content of the collapsible EQ panel
         if hasattr(self, 'eq_panel'):
             self.eq_panel.set_content(container)
@@ -2234,7 +2471,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, '_volume_value_label'):
                 scaled_value = val / 10.0  # 0-100 -> 0.0-10.0
                 self._volume_value_label.setText(f"{scaled_value:.1f}")
-            
+
             # Apply volume: song volume (val) × master volume
             if hasattr(self, 'player') and hasattr(self.player, 'set_volume'):
                 final_volume = (val / 100.0) * self._master_volume
@@ -2244,7 +2481,7 @@ class MainWindow(QMainWindow):
             print(f"[App] ERROR setting volume: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def _on_volume_released(self):
         """Handle volume slider release - NO auto-save, just mark as user-adjusted."""
         val = self._volume_slider.value()
@@ -2336,7 +2573,7 @@ class MainWindow(QMainWindow):
         m_play.addAction(act_next)
 
         m_play.addSeparator()
-        
+
         act_repeat = QAction("Repeat Current Track", self)
         act_repeat.setCheckable(True)
         act_repeat.setChecked(False)
@@ -2493,7 +2730,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: self._set_rack_mode(True))
         except Exception as e:
             print(f"[SidecarEQ] Applying UI prefs failed: {e}")
-    
+
     def _show_about_dialog(self):
         """Display the About dialog with app information."""
         about_text = """<h2>Sidecar EQ</h2>
@@ -2553,24 +2790,24 @@ Licensed under AGPL v3</p>
                     print(f"[App] Applied: track={current_track_vol}% × master={self._master_volume*100:.0f}% = {final_volume*100:.0f}%")
         except Exception as e:
             print(f"[App] Error setting master volume: {e}")
-    
+
     def _on_save_volume_clicked(self):
         """Save only volume for current track."""
         if self.current_row is None:
             self.statusBar().showMessage("No track loaded", 3000)
             return
-        
+
         try:
             # Get current volume value
             volume = self._volume_slider.value()
-            
+
             # Save to store
             if hasattr(self, 'model') and self.model and self.current_row < self.model.rowCount():
                 path_index = self.model.index(self.current_row, 0)
                 file_path = self.model.data(path_index, Qt.ItemDataRole.UserRole)
                 if file_path:
                     store.set_record(f"volume:{file_path}", volume)
-                    
+
             # Show confirmation
             self._save_volume_btn.setText("✓ Saved!")
             self._set_button_success_style(self._save_volume_btn)
@@ -2580,17 +2817,17 @@ Licensed under AGPL v3</p>
         except Exception as e:
             self.statusBar().showMessage(f"Save failed: {e}", 3000)
             print(f"[App] Save volume failed: {e}")
-    
+
     def _on_save_eq_clicked(self):
         """Save only EQ settings for current track."""
         if self.current_row is None:
             self.statusBar().showMessage("No track loaded", 3000)
             return
-        
+
         try:
             # Save EQ settings
             self.save_eq_for_current_track()
-            
+
             # Show confirmation
             self._save_eq_btn.setText("✓ Saved!")
             self._set_button_success_style(self._save_eq_btn)
@@ -2600,13 +2837,13 @@ Licensed under AGPL v3</p>
         except Exception as e:
             self.statusBar().showMessage(f"Save failed: {e}", 3000)
             print(f"[App] Save EQ failed: {e}")
-    
+
     def _on_save_both_clicked(self):
         """Save both volume and EQ settings for current track."""
         if self.current_row is None:
             self.statusBar().showMessage("No track loaded", 3000)
             return
-        
+
         try:
             # Save volume
             volume = self._volume_slider.value()
@@ -2615,32 +2852,32 @@ Licensed under AGPL v3</p>
                 file_path = self.model.data(path_index, Qt.ItemDataRole.UserRole)
                 if file_path:
                     store.set_record(f"volume:{file_path}", volume)
-            
+
             # Save EQ
             self.save_eq_for_current_track()
-            
+
             # Show confirmation on ALL THREE buttons to indicate both vol and EQ were saved
             self._save_volume_btn.setText("✓ Saved!")
             self._set_button_success_style(self._save_volume_btn)
-            
+
             self._save_eq_btn.setText("✓ Saved!")
             self._set_button_success_style(self._save_eq_btn)
-            
+
             self._save_both_btn.setText("✓ Saved!")
             self._set_button_success_style(self._save_both_btn)
-            
+
             self._save_feedback_timer.start(3000)
             self.statusBar().showMessage("✓ Volume & EQ saved", 2000)
             print("[App] Both volume and EQ saved")
         except Exception as e:
             self.statusBar().showMessage(f"Save failed: {e}", 3000)
             print(f"[App] Save both failed: {e}")
-    
+
     def _set_button_success_style(self, button):
         """Apply success styling to a button."""
         btn_font_size = 10
         btn_padding = "4px 12px"
-        
+
         if USE_MODERN_UI:
             system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
             button.setStyleSheet(f"""
@@ -2669,39 +2906,39 @@ Licensed under AGPL v3</p>
                     min-width: 70px;
                 }}
             """)
-    
+
     def _auto_save_settings_for_current_track(self):
         """Automatically save EQ and volume settings when switching tracks or ending playback."""
         if self.current_row is None:
             return
-        
+
         try:
             paths = self.model.paths()
             if not paths or self.current_row >= len(paths):
                 return
-            
+
             # Save both volume and EQ silently (no UI feedback)
             # Save volume
             volume = self._volume_slider.value() if hasattr(self, '_volume_slider') else 75
             path = paths[self.current_row]
             if path:
                 store.set_record(f"volume:{path}", volume)
-            
+
             # Save EQ
             self.save_eq_for_current_track()
-            
+
             print(f"[App] Auto-saved EQ and volume for: {Path(path).stem} (Vol: {volume}%)")
         except Exception as e:
             print(f"[App] Auto-save failed: {e}")
-    
+
     def _reset_save_buttons_text(self):
         """Reset save button back to normal state after confirmation."""
         self._save_both_btn.setText("Save EQ and Vol")
-        
+
         # Reset to normal styling
         btn_font_size = 10
         btn_padding = "4px 12px"
-        
+
         if USE_MODERN_UI:
             system_font = SystemFonts.get_system_font(size=btn_font_size, weight="Semibold").family()
             self._save_both_btn.setStyleSheet(f"""
@@ -2752,11 +2989,11 @@ Licensed under AGPL v3</p>
                     border: 1px solid #3a3a3a;
                 }}
             """)
-    
+
     def _on_save_settings_clicked(self):
         """Legacy handler - redirect to save both."""
         self._on_save_both_clicked()
-    
+
     def _reset_save_button_text(self):
         """Legacy reset - redirect to new method."""
         self._reset_save_buttons_text()
@@ -2765,7 +3002,7 @@ Licensed under AGPL v3</p>
     def on_play(self):
         """Toggle between play and pause. Play button shows current state."""
         from .play_state_delegate import PlayStateDelegate
-        
+
         # If currently playing, pause it
         if self.player.is_playing():
             self.player.pause()
@@ -2813,7 +3050,7 @@ Licensed under AGPL v3</p>
     def on_stop(self):
         """Stop playback and save current position for resume."""
         from .play_state_delegate import PlayStateDelegate
-        
+
         if self.current_row is not None and self.player:
             # Save current position for potential resume
             try:
@@ -2828,15 +3065,15 @@ Licensed under AGPL v3</p>
                     print(f"[App] Saved position {current_pos}ms for resume")
             except Exception as e:
                 print(f"[App] Failed to save position: {e}")
-            
+
             # Update play state indicator to show stopped (before clearing current_row)
             self.play_state_delegate.set_play_state(self.current_row, PlayStateDelegate.PLAY_STATE_STOPPED)
             self._play_state = PlayStateDelegate.PLAY_STATE_STOPPED
-        
+
         self.player.stop()
         self.statusBar().showMessage("Stopped")
         self.play_btn.setActive(False)
-        
+
         # Stop LED meters when stopped
         self._update_led_meters_playback(False)
 
@@ -2844,7 +3081,7 @@ Licensed under AGPL v3</p>
         # Auto-save settings before moving to next track
         if self.current_row is not None:
             self._auto_save_settings_for_current_track()
-        
+
         if self.current_row is None:
             self._play_row(0)
             return
@@ -2856,11 +3093,11 @@ Licensed under AGPL v3</p>
         status = "ON" if self._repeat_mode else "OFF"
         print(f"[App] Repeat mode: {status}")
         self._status_label.setText(f"🔁 Repeat: {status}")
-        
+
         # Update repeat button visual state
         if hasattr(self, '_repeat_btn'):
             self._repeat_btn.setActive(self._repeat_mode)
-        
+
         # Update menu action checked state
         if hasattr(self, '_repeat_action'):
             self._repeat_action.setChecked(self._repeat_mode)
@@ -2878,7 +3115,7 @@ Licensed under AGPL v3</p>
             if self.current_row is None and count > 0:
                 self.table.selectRow(0)
             self.statusBar().showMessage(f"Added {count} files")
-            
+
             # Auto-add to library (only local audio files, not videos or URLs)
             self._auto_add_to_library(files)
 
@@ -2897,14 +3134,14 @@ Licensed under AGPL v3</p>
         if self.current_row is None and count > 0:
             self.table.selectRow(0)
         self.statusBar().showMessage(f"Added {count} files from folder")
-        
+
         # Auto-add to library (only local audio files, not videos or URLs)
         self._auto_add_to_library(paths)
 
     def on_browse_plex(self):
         """Open Plex browser to add tracks from Plex server."""
         from .plex_browser import PlexBrowserDialog
-        
+
         # Load Plex server config from store
         plex_servers = store.get_record("plex_servers") or []
         if not plex_servers:
@@ -2914,24 +3151,24 @@ Licensed under AGPL v3</p>
                 "No Plex server configured. Please add a Plex server first via Plex → Manage Servers."
             )
             return
-        
+
         # Use first configured server (TODO: support multiple servers)
         server_config = plex_servers[0]
-        
+
         # Get username from server config (first user)
         users = server_config.get("users", [])
         username = users[0].get("username") if users else None
-        
+
         dialog = PlexBrowserDialog(self, server_config=server_config, username=username)
         if dialog.exec() == QDialog.Accepted:
             selected_tracks = dialog.get_selected_tracks()
             if selected_tracks:
                 # Add Plex tracks to queue with metadata
                 count = self.model.add_plex_tracks(selected_tracks)
-                
+
                 if self.current_row is None and count > 0:
                     self.table.selectRow(0)
-                
+
                 self.statusBar().showMessage(f"Added {count} tracks from Plex")
 
     def on_remove_selected(self):
@@ -2942,7 +3179,7 @@ Licensed under AGPL v3</p>
 
     def _on_search_result_selected(self, data, play_immediately: bool):
         """Handle selection of a search result.
-        
+
         Args:
             data: Either a file path string (legacy) or dict with 'type' and 'paths'
             play_immediately: If True, add and play; if False, just add to queue
@@ -2960,20 +3197,20 @@ Licensed under AGPL v3</p>
             self.statusBar().showMessage("❌ Invalid search result data!", 3000)
             print(f"[App] Error: Unexpected data type: {type(data)}")
             return
-        
+
         if not file_paths:
             self.statusBar().showMessage("❌ No file paths provided!", 3000)
             print(f"[App] Error: file_paths is empty")
             return
-        
+
         # Debug: Log what we received
         print(f"[App] Search result selected: {result_type} with {len(file_paths)} file(s)")
         print(f"[App] Play immediately: {play_immediately}")
-        
+
         # Filter out files that don't exist and collect missing ones
         existing_paths = []
         missing_paths = []
-        
+
         for file_path in file_paths:
             file_path_obj = Path(file_path)
             if file_path_obj.exists():
@@ -2981,12 +3218,12 @@ Licensed under AGPL v3</p>
             else:
                 missing_paths.append(file_path)
                 print(f"[App] Warning: File does not exist at: {file_path}")
-        
+
         # If some files are missing, show error dialog
         if missing_paths:
             # Show error for first missing file
             self._show_missing_file_dialog(missing_paths[0])
-            
+
             # If ALL files are missing, don't add anything
             if not existing_paths:
                 self.statusBar().showMessage(f"❌ All files not found!", 4000)
@@ -2994,21 +3231,21 @@ Licensed under AGPL v3</p>
             else:
                 # Some files exist - show warning and continue with existing ones
                 self.statusBar().showMessage(
-                    f"⚠️  {len(missing_paths)} file(s) not found, adding {len(existing_paths)} available", 
+                    f"⚠️  {len(missing_paths)} file(s) not found, adding {len(existing_paths)} available",
                     4000
                 )
-        
+
         # Add existing files to queue
         count = self.model.add_paths(existing_paths)
-        
+
         if count > 0:
             new_row = len(self.model._rows) - 1  # Last row added
-            
+
             if play_immediately:
                 # Play the first new track immediately
                 first_new_row = new_row - count + 1
                 self._play_row(first_new_row)
-                
+
                 # Show appropriate message based on type
                 if result_type == 'album':
                     album_title = data.get('title', 'Unknown Album')
@@ -3019,7 +3256,7 @@ Licensed under AGPL v3</p>
                 else:
                     filename = Path(existing_paths[0]).name
                     self.statusBar().showMessage(f"▶️  Now Playing: {filename}", 4000)
-                    
+
                 self.statusBar().setStyleSheet("QStatusBar { background: #2a4a2a; color: #4eff4e; }")
                 # Reset style after message
                 QTimer.singleShot(4000, lambda: self.statusBar().setStyleSheet(""))
@@ -3034,24 +3271,24 @@ Licensed under AGPL v3</p>
                 else:
                     filename = Path(existing_paths[0]).name
                     self.statusBar().showMessage(f"✅ Added to Queue: {filename}", 3000)
-                    
+
                 self.statusBar().setStyleSheet("QStatusBar { background: #2a3a4a; color: #4a9eff; }")
                 # Reset style after message
                 QTimer.singleShot(3000, lambda: self.statusBar().setStyleSheet(""))
         else:
             self.statusBar().showMessage(f"⚠️  Could not add file(s) to queue", 3000)
             print(f"[App] Error: model.add_paths returned 0 for {len(existing_paths)} path(s)")
-    
+
     def _show_missing_file_dialog(self, file_path: str):
         """Show dialog when file is not found, with helpful suggestions.
-        
+
         Args:
             file_path: The missing file path
         """
         from PySide6.QtWidgets import QMessageBox, QPushButton
-        
+
         file_path_obj = Path(file_path)
-        
+
         # Detect if it's on an external volume
         is_volume = file_path.startswith('/Volumes/')
         volume_name = None
@@ -3059,12 +3296,12 @@ Licensed under AGPL v3</p>
             parts = file_path.split('/')
             if len(parts) > 2:
                 volume_name = parts[2]
-        
+
         # Create message box
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Warning)
         msg.setWindowTitle("File Not Found")
-        
+
         if is_volume and volume_name:
             msg.setText(f"Cannot access file on unmounted volume")
             msg.setInformativeText(
@@ -3086,22 +3323,22 @@ Licensed under AGPL v3</p>
                 f"• Re-index your music library (File → Index Folder...)<br>"
                 f"• Verify the file hasn't been moved to a different folder"
             )
-        
+
         # Add buttons
         msg.setStandardButtons(QMessageBox.Ok)
-        
+
         # Add "Re-index Library" button if it's a volume issue
         if is_volume:
             reindex_btn = msg.addButton("Re-index Library...", QMessageBox.ActionRole)
             reindex_btn.clicked.connect(lambda: self._handle_reindex_request())
-        
+
         msg.exec()
-    
+
     def _handle_reindex_request(self):
         """Handle request to re-index library after missing file error."""
         # Trigger the index folder action
         from PySide6.QtWidgets import QMessageBox
-        
+
         reply = QMessageBox.question(
             self,
             "Re-index Music Library",
@@ -3111,24 +3348,24 @@ Licensed under AGPL v3</p>
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
             # Call the existing index folder method
             self._index_music_folder()
-    
+
     def _check_for_missing_volumes(self):
         """Check if any files in the library are on unmounted volumes and show notification."""
         if not self.indexer:
             return
-        
+
         library = self.indexer.get_library()
         if not library:
             return
-        
+
         # Collect missing volume information
         missing_volumes = set()
         missing_count = 0
-        
+
         for artist in library.artists.values():
             for album in artist.albums.values():
                 for song in album.songs:
@@ -3139,13 +3376,13 @@ Licensed under AGPL v3</p>
                             if len(parts) > 2:
                                 missing_volumes.add(parts[2])
                         missing_count += 1
-        
+
         # Show notification if missing files found
         if missing_volumes:
             from PySide6.QtWidgets import QMessageBox
-            
+
             volumes_str = ", ".join(sorted(missing_volumes))
-            
+
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Information)
             msg.setWindowTitle("Unmounted Volumes Detected")
@@ -3159,23 +3396,23 @@ Licensed under AGPL v3</p>
                 f"You can still use files that are currently available."
             )
             msg.setStandardButtons(QMessageBox.Ok)
-            
+
             # Don't block - use a timer to show after the window is visible
             QTimer.singleShot(500, msg.exec)
-                
+
     def _on_command_entered(self, command: str):
         """Handle command entered in search bar.
-        
+
         Args:
             command: Command string (e.g., "HELP", "PLAYLIST local")
         """
         parts = command.strip().split()
         if not parts:
             return
-            
+
         cmd = parts[0].upper()
         args = parts[1:] if len(parts) > 1 else []
-        
+
         if cmd == "HELP":
             self._show_help_dialog()
         elif cmd == "PLAYLIST":
@@ -3184,20 +3421,20 @@ Licensed under AGPL v3</p>
             self._handle_eq_command(args)
         else:
             self.statusBar().showMessage(f"Unknown command: {cmd}. Try HELP", 3000)
-            
+
     def _show_help_dialog(self):
         """Show help dialog with available commands."""
         help_text = """<h2>Sidecar EQ Commands</h2>
-        
+
         <p><b>Search:</b> Just type song names, artists, or albums!</p>
-        
+
         <p><b>Available Commands:</b></p>
         <ul>
             <li><b>HELP</b> - Show this help dialog</li>
             <li><b>PLAYLIST local</b> - Load local .m3u playlist</li>
             <li><b>EQ export</b> - Export current EQ settings</li>
         </ul>
-        
+
         <p><b>Tips:</b></p>
         <ul>
             <li>Press <b>Enter</b> to play the first result immediately</li>
@@ -3207,39 +3444,39 @@ Licensed under AGPL v3</p>
         </ul>
         """
         QMessageBox.information(self, "Sidecar EQ Help", help_text)
-        
+
     def _handle_playlist_command(self, args: list):
         """Handle PLAYLIST command.
-        
+
         Args:
             args: Command arguments
         """
         if not args or args[0] != "local":
             self.statusBar().showMessage("Usage: PLAYLIST local", 3000)
             return
-            
+
         # Open file dialog for .m3u playlist
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Playlist", "", "Playlist Files (*.m3u *.m3u8)"
         )
         if file_path:
             self.on_load_playlist(file_path)
-            
+
     def _handle_eq_command(self, args: list):
         """Handle EQ command.
-        
+
         Args:
             args: Command arguments
         """
         if not args or args[0] != "export":
             self.statusBar().showMessage("Usage: EQ export", 3000)
             return
-            
+
         # Export current EQ settings
         if self.current_row is not None and self.current_row < len(self.model._rows):
             track_info = self.model._rows[self.current_row]
             path = track_info.get("path", "")
-            
+
             if path:
                 settings = store.get_record(path)
                 if settings and "eq" in settings:
@@ -3253,30 +3490,30 @@ Licensed under AGPL v3</p>
                 self.statusBar().showMessage("No track playing", 3000)
         else:
             self.statusBar().showMessage("No track playing", 3000)
-            
+
     def on_index_folder(self):
         """Index a music folder for search functionality (runs in background)."""
         if not self.indexer:
             QMessageBox.warning(self, "Indexer Error", "Library indexer not available!")
             return
-            
+
         folder = QFileDialog.getExistingDirectory(self, "Select Music Folder to Index")
         if not folder:
             return
-            
+
         # Add to recent directories
         self._add_recent_music_dir(folder)
-            
+
         # Start background indexing thread
         self._start_background_indexing(folder)
-    
+
     def _load_recent_music_dirs(self):
         """Load recent music directories from settings and populate combo box."""
         try:
             recent_dirs = store.get_record("recent_music_dirs") or []
-            
+
             self.music_dir_combo.clear()
-            
+
             # If we have recent dirs, show the most recent one as the default/current selection
             # Prefer the last used directory if available, otherwise default to the user's home folder
             current_dir = None
@@ -3292,75 +3529,75 @@ Licensed under AGPL v3</p>
             self.music_dir_combo.addItem(f"♪ {display_name}", current_dir)
             # Add "Choose different folder..." option
             self.music_dir_combo.addItem("📁 Choose Different Folder...")
-            
+
             # Add Plex servers if available
             plex_servers = self._discover_plex_servers()
             if plex_servers:
                 for server_info in plex_servers:
                     self.music_dir_combo.addItem(
-                        f"🎵 Plex: {server_info['name']}", 
+                        f"🎵 Plex: {server_info['name']}",
                         f"plex://{server_info['name']}"
                     )
-            
+
             # Add other recent directories (excluding the current one)
             for dir_path in reversed(recent_dirs[-10:]):  # Last 10 directories, newest first
                 if dir_path != current_dir and Path(dir_path).exists():
                     display_name = self._shorten_path(dir_path)
                     self.music_dir_combo.addItem(f"  {display_name}", dir_path)
-            
+
             # Keep index 0 selected (current folder)
             self.music_dir_combo.setCurrentIndex(0)
-            
+
         except Exception as e:
             print(f"[App] Failed to load recent music dirs: {e}")
-    
+
     def _shorten_path(self, path: str, max_length: int = 50) -> str:
         """Shorten a path for display purposes."""
         if len(path) <= max_length:
             return path
-        
+
         # Show ~/... for home directory
         home = str(Path.home())
         if path.startswith(home):
             path = "~" + path[len(home):]
-        
+
         # If still too long, show start and end
         if len(path) > max_length:
             keep_start = max_length // 2 - 3
             keep_end = max_length // 2 - 3
             path = path[:keep_start] + "..." + path[-keep_end:]
-        
+
         return path
-    
+
     def _add_recent_music_dir(self, dir_path: str):
         """Add a directory to recent music directories list."""
         try:
             recent_dirs = store.get_record("recent_music_dirs") or []
-            
+
             # Remove if already exists (we'll add to end)
             if dir_path in recent_dirs:
                 recent_dirs.remove(dir_path)
-            
+
             # Add to end
             recent_dirs.append(dir_path)
-            
+
             # Keep only last 20
             recent_dirs = recent_dirs[-20:]
-            
+
             # Save
             store.put_record("recent_music_dirs", recent_dirs)
-            
+
             # Reload combo box
             self._load_recent_music_dirs()
-            
+
         except Exception as e:
             print(f"[App] Failed to add recent music dir: {e}")
-    
+
     def _on_music_dir_selected(self, index: int):
         """Handle selection from music directory combo box."""
         # Get the current data (directory path)
         dir_path = self.music_dir_combo.itemData(index)
-        
+
         if index == 0 and dir_path:
             # Current folder selected - no action needed (just showing current state)
             return
@@ -3390,7 +3627,7 @@ Licensed under AGPL v3</p>
             dir_path = self.music_dir_combo.itemData(index)
             if dir_path and Path(dir_path).exists():
                 self.statusBar().showMessage(f"Music folder: {dir_path}", 5000)
-                
+
                 # Optionally ask to re-index
                 reply = QMessageBox.question(
                     self,
@@ -3409,20 +3646,20 @@ Licensed under AGPL v3</p>
                     recent_dirs.remove(dir_path)
                     store.put_record("recent_music_dirs", recent_dirs)
                 self._load_recent_music_dirs()
-        
+
     def _start_background_indexing(self, folder: str):
         """Start indexing in a background thread.
-        
+
         Args:
             folder: Path to folder to index
         """
         from PySide6.QtCore import QRunnable, QThreadPool, QObject, Signal
-        
+
         class ProgressSignals(QObject):
             """Signals for progress updates (must be QObject for thread safety)."""
             progress = Signal(int, int)  # scanned, added
             finished = Signal(int, int, str)  # added, total, error
-        
+
         class IndexingTask(QRunnable):
             """Background task for indexing music library."""
             def __init__(self, indexer, folder, signals):
@@ -3430,15 +3667,15 @@ Licensed under AGPL v3</p>
                 self.indexer = indexer
                 self.folder = folder
                 self.signals = signals
-                
+
             def run(self):
                 """Run the indexing scan."""
                 try:
                     def progress_callback(scanned, added):
                         self.signals.progress.emit(scanned, added)
-                    
+
                     added = self.indexer.scan_folder(
-                        self.folder, 
+                        self.folder,
                         recursive=True,
                         progress_callback=progress_callback
                     )
@@ -3449,34 +3686,34 @@ Licensed under AGPL v3</p>
                     import traceback
                     traceback.print_exc()
                     self.signals.finished.emit(0, 0, str(e))
-        
+
         # Create signals
         signals = ProgressSignals()
         signals.progress.connect(self._on_indexing_progress)
         signals.finished.connect(self._on_indexing_complete)
-        
+
         # Show initial status
         self.statusBar().showMessage(f"🔍 Indexing {Path(folder).name}... You can keep using the app!", 0)
-        
+
         # Create and start background task
         task = IndexingTask(self.indexer, folder, signals)
         QThreadPool.globalInstance().start(task)
-        
+
     def _on_indexing_progress(self, scanned: int, added: int):
         """Handle progress updates from background indexer.
-        
+
         Args:
             scanned: Number of audio files scanned so far
             added: Number of new tracks added so far
         """
         self.statusBar().showMessage(
-            f"🔍 Indexing... Scanned {scanned} files, added {added} new tracks", 
+            f"🔍 Indexing... Scanned {scanned} files, added {added} new tracks",
             0
         )
-        
+
     def _on_indexing_complete(self, added: int, total: int, error: Optional[str]):
         """Handle indexing completion (called from background thread).
-        
+
         Args:
             added: Number of tracks added
             total: Total tracks in index
@@ -3488,13 +3725,13 @@ Licensed under AGPL v3</p>
             if hasattr(self, 'add_artist_btn'):
                 self.add_artist_btn.setEnabled(True)
             return
-            
+
         # Show completion message
         self.statusBar().showMessage(
-            f"✅ Indexing complete! Added {added} new tracks. Total: {total} indexed tracks.", 
+            f"✅ Indexing complete! Added {added} new tracks. Total: {total} indexed tracks.",
             5000
         )
-        
+
         # Refresh availability in the Now Playing tracklist
         try:
             if self.model and self.current_row is not None and 0 <= self.current_row < len(self.model._rows):
@@ -3510,8 +3747,8 @@ Licensed under AGPL v3</p>
 
         # Show dialog with results
         QMessageBox.information(
-            self, 
-            "Indexing Complete! 🎵", 
+            self,
+            "Indexing Complete! 🎵",
             f"Successfully indexed your music library!\n\n"
             f"• Added: {added} new tracks\n"
             f"• Total indexed: {total} tracks\n\n"
@@ -3520,31 +3757,31 @@ Licensed under AGPL v3</p>
 
     def _discover_plex_servers(self):
         """Get configured Plex servers from store.
-        
+
         Returns:
             List of dicts with server info, or empty list if none configured.
         """
         try:
             servers = store.get_record("plex_servers") or []
-            
+
             if servers:
                 print(f"[App] Found {len(servers)} configured Plex server(s)")
             return servers
-            
+
         except Exception as e:
             print(f"[App] Failed to load Plex servers: {e}")
             return []
-    
+
     def _connect_to_plex_server(self, server_name: str):
         """Connect to a Plex server after user selects a Home User.
-        
+
         Args:
             server_name: Name of the Plex server to connect to
         """
         # Get server configuration
         servers = store.get_record("plex_servers") or []
         server = next((s for s in servers if s.get('name') == server_name), None)
-        
+
         if not server:
             QMessageBox.warning(
                 self,
@@ -3553,7 +3790,7 @@ Licensed under AGPL v3</p>
                 "Please configure it in Settings → Manage Plex Servers."
             )
             return
-            
+
         users = server.get('users', [])
         if not users:
             QMessageBox.warning(
@@ -3563,7 +3800,7 @@ Licensed under AGPL v3</p>
                 "Please configure users in Settings → Manage Plex Servers."
             )
             return
-            
+
         # If only one user, use it directly
         if len(users) == 1:
             user = users[0]
@@ -3574,39 +3811,39 @@ Licensed under AGPL v3</p>
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             user = dialog.get_selected_user()
-            
+
         if user:
             username = user.get('username', 'Unknown')
             self._update_plex_server_users(server_name, users)
             self._open_plex_browser_as_user(server, username)
-    
+
     def _open_plex_browser_as_user(self, server: dict, username: str):
         """Open Plex browser dialog for a specific Home User.
-        
+
         Args:
             server: Server configuration dict with host, port, users
             username: Name of the Home User to connect as
         """
         try:
             from .plex_browser import PlexBrowserDialog
-            
+
             # Note: For now, we'll use a simple approach
             # In the future, this should authenticate as the specific Home User
             # For guest users (no PIN), we can connect directly
             # For users with PINs, we need to get a session token
-            
+
             dialog = PlexBrowserDialog(self, server_config=server, username=username)
             result = dialog.exec()
-            
+
             if result == QDialog.DialogCode.Accepted:
                 selected_tracks = dialog.get_selected_tracks()
                 if selected_tracks:
                     # Add Plex tracks to queue with metadata
                     count = self.model.add_plex_tracks(selected_tracks)
-                    
+
                     if self.current_row is None and count > 0:
                         self.table.selectRow(0)
-                    
+
                     server_name = server.get('name', 'Plex')
                     self.statusBar().showMessage(f"✅ Added {count} tracks from {server_name} ({username})", 5000)
         except Exception as e:
@@ -3618,17 +3855,17 @@ Licensed under AGPL v3</p>
                 "Plex Connection Failed",
                 f"Could not connect to {server.get('name', 'Plex')} as {username}:\n\n{str(e)}"
             )
-    
+
     def _open_plex_account_manager(self):
         """Open the Plex Server Manager dialog to configure Plex servers and Home Users."""
         from .plex_account_manager import PlexServerManagerDialog
-        
+
         dialog = PlexServerManagerDialog(store, self)
         dialog.exec()
-        
+
         # Reload music directory dropdown to show newly added servers
         self._load_recent_music_dirs()
-        
+
         # Update Plex menu to reflect changes
         self._update_plex_menu()
 
@@ -3647,18 +3884,18 @@ Licensed under AGPL v3</p>
                 store.put_record("plex_servers", servers)
         except Exception as exc:
             print(f"[App] Failed to persist Plex user changes: {exc}")
-    
+
     def _update_plex_menu(self):
         """Update the Browse Plex submenu with configured servers and users."""
         if not hasattr(self, '_plex_menu'):
             return
-            
+
         # Clear existing menu items
         self._plex_menu.clear()
-        
+
         # Get configured servers
         servers = self._discover_plex_servers()
-        
+
         if not servers:
             # No servers configured - show placeholder
             act_no_servers = QAction("No Plex Servers Configured", self)
@@ -3669,19 +3906,19 @@ Licensed under AGPL v3</p>
             act_manage.triggered.connect(self._open_plex_account_manager)
             self._plex_menu.addAction(act_manage)
             return
-        
+
         # Add menu items for each server
         for server in servers:
             server_name = server.get('name', 'Unknown Server')
             users = server.get('users', [])
-            
+
             if not users:
                 # Server has no users configured - show disabled entry
                 act_server = QAction(f"{server_name} (no users configured)", self)
                 act_server.setEnabled(False)
                 self._plex_menu.addAction(act_server)
                 continue
-            
+
             if len(users) == 1:
                 # Single user - direct action (no submenu)
                 user = users[0]
@@ -3703,7 +3940,7 @@ Licensed under AGPL v3</p>
                         lambda checked=False, s=server, u=username: self._open_plex_browser_as_user(s, u)
                     )
                     server_submenu.addAction(act_user)
-        
+
         # Add separator and management option at bottom
         self._plex_menu.addSeparator()
         act_manage = QAction("Manage Plex Servers…", self)
@@ -3712,7 +3949,7 @@ Licensed under AGPL v3</p>
 
     def _set_initial_audio_settings(self):
         """Initialize volume and EQ sliders to sensible defaults.
-        
+
         This is called on app startup to set global defaults (80% volume, neutral EQ).
         These defaults will be overridden when:
         - A track is loaded that has saved analysis data
@@ -3758,15 +3995,61 @@ Licensed under AGPL v3</p>
                     self.player.set_volume(0.5)  # 50% volume
             except Exception:
                 pass
-            
+
             print("[App] 🎚️  Set global defaults: 80% volume, +4.8dB EQ (will be overridden by track analysis)")
         except Exception as e:
             print(f"[App] Failed to set initial audio settings: {e}")
 
     def _auto_refresh_metadata(self):
-        """Silently refresh metadata on startup without status message."""
-        self._refresh_metadata_internal(show_message=False)
-    
+        """Start background metadata loading for rows that need it."""
+        if not self.model or not hasattr(self.model, '_rows'):
+            return
+
+        # Find all rows that need metadata extraction
+        rows_needing_metadata = []
+        for i, row in enumerate(self.model._rows):
+            if row.get("_needs_metadata"):
+                rows_needing_metadata.append(i)
+
+        if not rows_needing_metadata:
+            return
+
+        print(f"[App] Starting background metadata extraction for {len(rows_needing_metadata)} tracks...")
+
+        # Create worker and thread
+        self._metadata_thread = QThread()
+        self._metadata_worker = MetadataLoaderWorker(self.model, rows_needing_metadata)
+        self._metadata_worker.moveToThread(self._metadata_thread)
+
+        # Connect signals
+        self._metadata_worker.metadata_loaded.connect(self._on_metadata_loaded)
+        self._metadata_worker.finished.connect(self._on_metadata_loading_finished)
+        self._metadata_thread.started.connect(self._metadata_worker.run)
+
+        # Start the thread
+        self._metadata_thread.start()
+
+    def _on_metadata_loaded(self, row_index, metadata):
+        """Handle metadata loaded for a single row (called from main thread)."""
+        if self.model:
+            self.model.update_row_metadata(row_index, metadata)
+
+    def _on_metadata_loading_finished(self):
+        """Clean up after background metadata loading completes."""
+        print("[App] Background metadata extraction complete")
+
+        # Clean up thread
+        if hasattr(self, '_metadata_thread'):
+            self._metadata_thread.quit()
+            self._metadata_thread.wait()
+            self._metadata_thread.deleteLater()
+            delattr(self, '_metadata_thread')
+
+        if hasattr(self, '_metadata_worker'):
+            self._metadata_worker.deleteLater()
+            delattr(self, '_metadata_worker')
+
+
     def _auto_add_to_library(self, paths: list):
         """Automatically add local audio files to the library when added to queue.
 
@@ -3778,7 +4061,7 @@ Licensed under AGPL v3</p>
         """
         if not self.indexer:
             return
-        
+
         # Filter to only local audio files (skip videos, URLs, etc.)
         from .video_extractor import is_video_file
         audio_paths = []
@@ -3786,22 +4069,22 @@ Licensed under AGPL v3</p>
             # Skip URLs
             if isinstance(path, str) and path.startswith(('http://', 'https://')):
                 continue
-            
+
             # Skip videos
             try:
                 if is_video_file(path):
                     continue
             except Exception:
                 pass
-            
+
             # Check if it's an audio file
             file_ext = Path(path).suffix.lower()
             if file_ext in AUDIO_EXTS:
                 audio_paths.append(path)
-        
+
         if not audio_paths:
             return
-        
+
         # Add to library in background
         added = 0
         for path in audio_paths:
@@ -3812,50 +4095,50 @@ Licensed under AGPL v3</p>
                     added += 1
             except Exception as e:
                 print(f"[App] Failed to add {path} to library: {e}")
-        
+
         if added > 0:
             self.indexer.save_library()
             print(f"[App] 📚 Auto-added {added} track(s) to library")
-    
+
     def _on_metadata_lookup(self, row: int):
         """Lookup and update metadata for a specific track from online sources.
-        
+
         Args:
             row: Row index in the queue table
         """
         try:
             if not self.model or row < 0 or row >= len(self.model._rows):
                 return
-            
+
             row_data = self.model._rows[row]
             path = row_data.get('path', '')
-            
+
             # Skip URLs (can't lookup metadata for streams)
             if path.startswith(('http://', 'https://')):
                 self.statusBar().showMessage("Metadata lookup not available for URLs/streams")
                 return
-            
+
             # Get current metadata for search
             title = row_data.get('title') or Path(path).stem
             artist = row_data.get('artist', '')
             album = row_data.get('album', '')
-            
+
             # Show status
             self.statusBar().showMessage(f"Looking up metadata for: {title}...")
             print(f"[App] 🌐 Metadata lookup: {title} - {artist}")
-            
+
             # For now, use simple online search approach
             # Fetch online metadata using Wikipedia, MusicBrainz, and Last.fm
             from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QPushButton
             from .online_metadata import get_metadata_fetcher
-            
+
             # Create a dialog to show the results
             dialog = QDialog(self)
             dialog.setWindowTitle(f"Online Metadata: {artist}")
             dialog.resize(600, 500)
-            
+
             layout = QVBoxLayout(dialog)
-            
+
             # Text browser for rich HTML content
             browser = QTextBrowser()
             browser.setOpenExternalLinks(True)  # Allow clicking links
@@ -3867,7 +4150,7 @@ Licensed under AGPL v3</p>
                     border-radius: 4px;
                 }
             """)
-            
+
             # Show loading message first
             browser.setHtml("""
                 <html>
@@ -3877,25 +4160,25 @@ Licensed under AGPL v3</p>
                 </body>
                 </html>
             """)
-            
+
             layout.addWidget(browser)
-            
+
             # Button box
             button_box = QDialogButtonBox(QDialogButtonBox.Close)
             button_box.rejected.connect(dialog.reject)
             layout.addWidget(button_box)
-            
+
             # Show dialog (non-blocking)
             dialog.show()
-            
+
             # Fetch metadata in background (we'll use a simple approach for now)
             # In a production app, you'd use QThread or async to avoid blocking the UI
             self.statusBar().showMessage(f"Fetching online metadata for '{artist}'...")
-            
+
             try:
                 fetcher = get_metadata_fetcher()
                 info = fetcher.fetch_artist_info(artist, title)
-                
+
                 # Build local metadata dict for context
                 local_meta = {
                     'title': title,
@@ -3903,17 +4186,17 @@ Licensed under AGPL v3</p>
                     'album': album,
                     'path': path
                 }
-                
+
                 # Format as HTML and display
                 html = fetcher.format_artist_info_html(info, local_meta)
                 browser.setHtml(html)
-                
+
                 if info:
                     source = info.get('source', 'online')
                     self.statusBar().showMessage(f"Metadata fetched from {source}", 3000)
                 else:
                     self.statusBar().showMessage("No online metadata found", 3000)
-                    
+
             except Exception as e:
                 browser.setHtml(f"""
                     <html>
@@ -3926,64 +4209,64 @@ Licensed under AGPL v3</p>
                 """)
                 self.statusBar().showMessage(f"Metadata fetch failed: {e}", 3000)
                 print(f"[App] Metadata fetch error: {e}")
-            
+
         except Exception as e:
             print(f"[App] Error in metadata lookup: {e}")
             self.statusBar().showMessage(f"Metadata lookup failed: {e}")
-    
+
     def on_refresh_metadata(self):
         """Re-scan all tracks in the queue and update their metadata."""
         self._refresh_metadata_internal(show_message=True)
-    
+
     def _refresh_metadata_internal(self, show_message=True):
         """Internal method to refresh metadata."""
         if not self.model or not hasattr(self.model, '_rows'):
             return
-        
+
         try:
             from mutagen import File as MutagenFile
         except:
-            QMessageBox.warning(self, "Mutagen Not Installed", 
+            QMessageBox.warning(self, "Mutagen Not Installed",
                               "Mutagen library is required for metadata reading.\nInstall with: pip install mutagen")
             return
-        
+
         updated_count = 0
         for row in self.model._rows:
             path = row.get('path', '')
             if not path or path.startswith(('http://', 'https://')):
                 continue  # Skip URLs
-            
+
             try:
                 # Re-read metadata using the improved logic
                 mf = MutagenFile(path)
                 if mf and hasattr(mf, 'tags') and mf.tags:
                     tags = mf.tags
-                    
+
                     title = None
                     artist = None
                     album = None
-                    
+
                     # Title
                     for key in ['TIT2', 'title', '©nam', 'TITLE']:
                         if key in tags:
                             val = tags[key]
                             title = str(val[0]) if isinstance(val, list) else str(val)
                             break
-                    
+
                     # Artist
                     for key in ['TPE1', 'artist', '©ART', 'ARTIST']:
                         if key in tags:
                             val = tags[key]
                             artist = str(val[0]) if isinstance(val, list) else str(val)
                             break
-                    
+
                     # Album
                     for key in ['TALB', 'album', '©alb', 'ALBUM']:
                         if key in tags:
                             val = tags[key]
                             album = str(val[0]) if isinstance(val, list) else str(val)
                             break
-                    
+
                     # Update the row if we found any metadata
                     if any([title, artist, album]):
                         if title:
@@ -3996,7 +4279,7 @@ Licensed under AGPL v3</p>
             except Exception as e:
                 print(f"[App] Failed to refresh metadata for {Path(path).name}: {e}")
                 continue
-        
+
         # Force table refresh
         self.model.layoutChanged.emit()
         if show_message:
@@ -4057,7 +4340,7 @@ Licensed under AGPL v3</p>
         if not tracks:
             QMessageBox.information(self, "Plex", "No tracks in the selected playlist.")
             return
-        
+
         # Add tracks using the model's add_track method for Plex items
         count = 0
         for track in tracks:
@@ -4068,11 +4351,11 @@ Licensed under AGPL v3</p>
             except Exception as e:
                 print(f"[App] Failed to add Plex track: {e}")
                 continue
-        
+
         if not count:
             QMessageBox.information(self, "Plex", "No tracks could be imported from playlist.")
             return
-            
+
         if self.current_row is None and count > 0:
             self.table.selectRow(0)
         self.statusBar().showMessage(f"Imported {count} tracks from Plex playlist: {title}")
@@ -4082,39 +4365,39 @@ Licensed under AGPL v3</p>
         paths = self.model.paths()
         if not paths or row is None or row < 0 or row >= len(paths):
             return
-        
+
         # Auto-save settings for previous track before switching
         if self.current_row is not None and self.current_row != row:
             self._auto_save_settings_for_current_track()
-        
+
         # Cancel any running background analysis since we're switching tracks
         if self._analysis_worker and self._analysis_worker.isRunning():
             self._analysis_worker.stop_analysis()
             self._pending_analysis_path = None
-        
+
         # Reset user volume adjustment flag for new track
         self._user_adjusted_volume = False
-        
+
         self.current_row = row
-        
+
         # Enable Save button since we have a loaded track
         if hasattr(self, '_save_both_btn'):
             self._save_both_btn.setEnabled(True)
-        
+
         # Get the track info to handle both local files, URLs, and Plex streams
         track_info = self.model._rows[row] if row < len(self.model._rows) else {}
         path = paths[row]
-        
+
         # Update metadata display for the loaded track
         self._update_metadata_display(path)
-        
+
         # Update Now Playing artist info display
         self._update_artist_info_display(path)
-        
+
         # Determine source type and playback URL
         # Robust source detection with validation
         stream_url = track_info.get('stream_url')
-        
+
         if stream_url and stream_url.strip() and stream_url.startswith(('http://', 'https://')):
             # Plex track - has valid stream URL
             playback_url = stream_url
@@ -4124,11 +4407,11 @@ Licensed under AGPL v3</p>
             # Website URL - path is HTTP/HTTPS URL
             playback_url = path
             identifier = path
-            source_type = 'url'  
+            source_type = 'url'
         elif path and path.strip():
             # Local file - could be audio or video
             from .video_extractor import is_video_file, extract_audio_from_video
-            
+
             if is_video_file(path):
                 # Video file - extract audio for playback
                 print(f"[App] Video file detected: {Path(path).name}")
@@ -4150,43 +4433,43 @@ Licensed under AGPL v3</p>
             # Invalid/empty path - this shouldn't happen
             print(f"[Error] Invalid path/URL for row {row}: path='{path}', track_info={track_info}")
             raise ValueError(f"Invalid path for playback: '{path}'")
-        
+
         try:
             self.player.play(playback_url)
             self.play_btn.setActive(True)
             self.table.selectRow(row)
-            
+
             # Update play state indicator to show playing
             from .play_state_delegate import PlayStateDelegate
             self.play_state_delegate.set_play_state(row, PlayStateDelegate.PLAY_STATE_PLAYING)
             self._play_state = PlayStateDelegate.PLAY_STATE_PLAYING
-            
+
             # Enable Save button since we have a loaded track
             if hasattr(self, '_save_both_btn'):
                 self._save_both_btn.setEnabled(True)
-            
+
             # Start LED meters if they're visible and enabled
             self._update_led_meters_playback(True)
-            
+
             title = self.model.data(self.model.index(row, 2))  # Title is now column 2
             artist = self.model.data(self.model.index(row, 3)) or ""  # Artist is column 3
             album = self.model.data(self.model.index(row, 4)) or ""  # Album is column 4
-            
+
             # Show source type in status
             source_labels = {'local': '', 'url': 'from URL', 'plex': 'from Plex', 'video': 'from video'}
             source_label = source_labels.get(source_type, '')
             status_msg = f"Playing: {title}" + (f" ({source_label})" if source_label else "")
             self.statusBar().showMessage(status_msg)
-            
+
             # Track play count using the identifier
             self._increment_play_count(identifier)
-            
+
             # Handle EQ and analysis based on source type
             # ALWAYS load saved settings first (prioritize manual saves)
             saved_data = self.load_eq_for_track(identifier)
             saved_volume = saved_data.get('suggested_volume') if saved_data else None
             has_manual_save = saved_data.get('manual_save', False) if saved_data else False
-            
+
             # If user manually saved settings, ALWAYS use those (skip analysis)
             if has_manual_save and saved_data:
                 print(f"[App] ✓ Loading manually saved settings for: {Path(identifier).stem}")
@@ -4227,7 +4510,7 @@ Licensed under AGPL v3</p>
                     print(f"[App] No saved settings - starting analysis for: {Path(identifier).stem}")
                     self._apply_eq_settings([0]*7, "Flat (No EQ)")  # Flat EQ while analyzing
                     self._start_background_analysis(identifier)
-            
+
             # Apply saved volume for ALL source types (not just local files)
             if saved_volume is not None:
                 print(f"[App] ✓ Loading saved volume: {saved_volume}%")
@@ -4236,10 +4519,10 @@ Licensed under AGPL v3</p>
                 # No saved volume - use default 75% for new tracks
                 print("[App] ⚠️  No saved volume found, defaulting to 75%")
                 self._apply_volume_setting(75)
-                
+
         except Exception as e:
             QMessageBox.warning(self, "Play error", str(e))
-    
+
     def _get_or_analyze_eq(self, path: str) -> dict:
         """Get saved EQ data or start background analysis if first time playing."""
         # First check if we have saved EQ settings
@@ -4252,11 +4535,11 @@ Licensed under AGPL v3</p>
                 return saved_data
         except Exception:
             pass
-        
+
         # No saved EQ found, start background analysis
         self._start_background_analysis(path)
         return None
-    
+
     def _start_background_analysis(self, path: str):
         """Start background analysis for the given track."""
         try:
@@ -4264,20 +4547,20 @@ Licensed under AGPL v3</p>
             if self._analysis_worker and self._analysis_worker.isRunning():
                 self._analysis_worker.stop_analysis()
                 self._analysis_worker.wait(1000)  # Wait up to 1 second
-            
+
             # Start new background analysis
             self._analysis_worker = BackgroundAnalysisWorker(path, self)
             self._analysis_worker.analysis_complete.connect(self._on_analysis_complete)
             self._analysis_worker.analysis_failed.connect(self._on_analysis_failed)
             self._pending_analysis_path = path
-            
+
             self._analysis_worker.start()
             self.statusBar().showMessage(f"Playing: {Path(path).stem} (analyzing in background...)")
-            
+
         except Exception as e:
             print(f"[App] Failed to start background analysis: {e}")
             self.statusBar().showMessage(f"Playing: {Path(path).stem}")
-    
+
     def _on_analysis_complete(self, path: str, analysis_result: dict):
         """Handle completed background analysis."""
         try:
@@ -4285,10 +4568,10 @@ Licensed under AGPL v3</p>
             if path != self._pending_analysis_path:
                 print(f"[App] Ignoring stale analysis for: {Path(path).stem}")
                 return
-            
+
             # Save the analysis results
             self._save_analysis_data(path, analysis_result)
-            
+
             # Apply EQ and volume suggestions in real-time
             if analysis_result:
                 # Apply EQ settings
@@ -4297,7 +4580,7 @@ Licensed under AGPL v3</p>
                     gains_db = eq_data.get('gains_db', [0]*7)
                     # Analysis doesn't set a preset - it's custom based on audio content
                     self._apply_eq_settings(gains_db, "Custom")
-                
+
                 # Apply volume suggestion ONLY if user hasn't manually adjusted it
                 if not self._user_adjusted_volume:
                     analysis_data = analysis_result.get('analysis_data', {})
@@ -4305,23 +4588,23 @@ Licensed under AGPL v3</p>
                         self._apply_volume_setting(analysis_data['suggested_volume'])
                 else:
                     print("[App] Skipping volume from analysis (user adjusted manually)")
-                
+
                 lufs = analysis_result.get('analysis_data', {}).get('loudness_lufs', -23)
                 self.statusBar().showMessage(f"Playing: {Path(path).stem} (analyzed: {lufs:.1f} LUFS - settings applied)")
                 print(f"[App] Applied real-time analysis for: {Path(path).stem}")
-            
+
         except Exception as e:
             print(f"[App] Error applying analysis results: {e}")
         finally:
             self._pending_analysis_path = None
-    
+
     def _on_analysis_failed(self, path: str, error_message: str):
         """Handle failed background analysis."""
         print(f"[App] Background analysis failed for {Path(path).stem}: {error_message}")
         if path == self._pending_analysis_path:
             self.statusBar().showMessage(f"Playing: {Path(path).stem} (analysis failed)")
             self._pending_analysis_path = None
-    
+
     def _apply_volume_setting(self, suggested_volume: int):
         """Apply suggested volume to the volume slider without triggering save."""
         try:
@@ -4333,52 +4616,52 @@ Licensed under AGPL v3</p>
                 else:
                     # Clamp to valid range (0-100)
                     volume = max(0, min(100, suggested_volume))
-                
+
                 # Block signals to prevent saving this loaded value back to the track
                 self._volume_slider.blockSignals(True)
                 self._volume_slider.setValue(volume)
                 self._volume_slider.blockSignals(False)
-                
+
                 # UPDATE LABEL to match slider (signals are blocked so realtime handler won't fire)
                 if hasattr(self, '_volume_value_label'):
                     scaled_value = volume / 10.0  # 0-100 -> 0.0-10.0
                     self._volume_value_label.setText(f"{scaled_value:.1f}")
-                
+
                 # Apply to player immediately
                 if hasattr(self.player, 'set_volume'):
                     self.player.set_volume(volume / 100.0)
-                
+
                 print(f"[App] 📻 LOADED volume {volume}% (display: {volume/10.0:.1f})")
         except Exception as e:
             print(f"[App] Failed to apply volume: {e}")
-    
+
     def _save_volume_for_current_track(self, volume_value: int):
         """Save volume setting for the currently playing track."""
         try:
             if self.current_row is None or not self.model:
                 return
-            
+
             # Get current track path
             track_path = self.model.data(self.model.index(self.current_row, 0), Qt.UserRole)
             if not track_path:
                 return
-            
+
             # Load existing EQ data or create new
             existing_data = self.load_eq_for_track(track_path) or {}
-            
+
             # Update volume setting
             existing_data['suggested_volume'] = volume_value
-            
+
             # Save back to file
             self._save_analysis_data(track_path, existing_data)
             print(f"[App] 💾 SAVED volume {volume_value}% for: {track_path}")
-            
+
         except Exception as e:
             print(f"[App] Error saving volume: {e}")
-    
+
     def _apply_eq_settings(self, gains_db: list, preset_name: str = None):
         """Apply EQ settings to the sliders and update value labels.
-        
+
         Args:
             gains_db: List of EQ gains in dB (-12 to +12 range)
             preset_name: Optional preset name to restore in the dropdown
@@ -4389,23 +4672,23 @@ Licensed under AGPL v3</p>
                     if i < len(gains_db):
                         # Clamp to dB range (-12 to +12)
                         db_value = max(-12, min(12, int(gains_db[i])))
-                        
+
                         # Convert dB to BeamSlider 0..100 scale
                         # -12dB -> 0, 0dB -> 50, +12dB -> 100
                         slider_value = int(round(((db_value + 12) / 24.0) * 100))
-                        
+
                         # Block signals to prevent saving during load
                         slider.blockSignals(True)
                         slider.setValue(slider_value)
                         slider.blockSignals(False)
-                        
+
                         # Update the value label too
                         if hasattr(self, '_eq_value_labels') and i < len(self._eq_value_labels):
                             if db_value >= 0:
                                 self._eq_value_labels[i].setText(f"+{db_value}")
                             else:
                                 self._eq_value_labels[i].setText(f"{db_value}")
-            
+
             # Restore preset dropdown if preset_name provided
             if preset_name and hasattr(self, '_eq_preset_combo'):
                 # Find the preset in the combo box
@@ -4424,20 +4707,20 @@ Licensed under AGPL v3</p>
                         self._eq_preset_combo.blockSignals(False)
         except Exception as e:
             print(f"[App] Failed to apply EQ: {e}")
-    
+
     def _update_led_meters_playback(self, is_playing: bool):
         """Enable/disable LED meter simulation based on playback state.
-        
+
         Args:
             is_playing: True if audio is playing, False otherwise
         """
         try:
             if not hasattr(self, '_led_meters') or not hasattr(self, '_led_meters_action'):
                 return
-            
+
             # Only animate if menu action is checked AND audio is playing
             meters_visible = self._led_meters_action.isChecked()
-            
+
             if is_playing and meters_visible:
                 # Start simulation for all meters
                 for meter in self._led_meters:
@@ -4451,18 +4734,18 @@ Licensed under AGPL v3</p>
                     print("[App] LED meters stopped (no playback)")
         except Exception as e:
             print(f"[App] Error updating LED meter playback state: {e}")
-    
+
     def _toggle_led_meters_from_menu(self):
         """Toggle LED meters from the View menu."""
         # Get state from the menu action
         visible = self._led_meters_action.isChecked()
         self._toggle_led_meters_impl(visible)
-    
+
     def _toggle_led_meters(self, state):
         """Toggle LED meters from checkbox (legacy, if checkbox still exists)."""
         visible = (state == Qt.Checked)
         self._toggle_led_meters_impl(visible)
-    
+
     def _toggle_led_meters_impl(self, visible: bool):
         """Implementation of LED meters toggle."""
         try:
@@ -4472,7 +4755,7 @@ Licensed under AGPL v3</p>
                 if hasattr(self, 'player') and self.player:
                     from PySide6.QtMultimedia import QMediaPlayer
                     is_playing = (self.player._player.playbackState() == QMediaPlayer.PlayingState)
-                
+
                 for meter in self._led_meters:
                     if visible:
                         # Show meters and enable simulation if playing
@@ -4487,17 +4770,17 @@ Licensed under AGPL v3</p>
                         meter.enable_simulation(False)
                         meter.setVisible(False)
                         meter.hide()
-                
+
                 # Force layout update
                 if hasattr(self, 'eq_panel'):
                     self.eq_panel.updateGeometry()
                     self.eq_panel.update()
-                
+
                 status = 'visible' if visible else 'hidden'
                 print(f"[App] LED meters: {status} (playing={is_playing})")
         except Exception as e:
             print(f"[App] Failed to toggle LED meters: {e}")
-    
+
     def _toggle_repeat(self):
         """Toggle repeat mode for the current track."""
         self._repeat_enabled = self._repeat_btn.isChecked()
@@ -4507,7 +4790,7 @@ Licensed under AGPL v3</p>
         else:
             self._repeat_btn.setText("🔁 Repeat: Off")
             print("[App] Repeat mode disabled")
-    
+
     def _on_eq_label_changed(self, val, idx):
         """Update the value label only - does not apply EQ (prevents crackling during drag)."""
         # Update the value label for this slider
@@ -4517,10 +4800,10 @@ Licensed under AGPL v3</p>
                 self._eq_value_labels[idx].setText(f"+{val}")
             else:
                 self._eq_value_labels[idx].setText(f"{val}")
-    
+
     def _on_eq_released(self):
         """Apply EQ after a short delay when slider is released - prevents crackling.
-        
+
         Uses a timer to debounce rapid EQ changes (e.g., when adjusting multiple sliders).
         """
         try:
@@ -4536,23 +4819,23 @@ Licensed under AGPL v3</p>
                     # QSlider: already in -12 to +12 range
                     db_val = raw_val
                 eq_values.append(db_val)
-            
+
             self._pending_eq_values = eq_values
-            
+
             # Switch to "Custom" preset when user manually adjusts sliders
             if hasattr(self, '_eq_preset_combo'):
                 # Block signals to prevent triggering preset change
                 self._eq_preset_combo.blockSignals(True)
                 self._eq_preset_combo.setCurrentIndex(9)  # "Custom" is last item
                 self._eq_preset_combo.blockSignals(False)
-            
+
             # Restart timer (debounces multiple slider releases)
             self._eq_update_timer.stop()
             self._eq_update_timer.start(300)  # 300ms delay to allow multiple slider adjustments
-            
+
         except Exception as e:
             print(f"[App] Failed to queue EQ update: {e}")
-    
+
     def _apply_pending_eq_update(self):
         """Apply the pending EQ update (called by timer)."""
         try:
@@ -4562,39 +4845,39 @@ Licensed under AGPL v3</p>
                 self._pending_eq_values = None
         except Exception as e:
             print(f"[App] Failed to apply pending EQ: {e}")
-    
+
     def _on_eq_changed(self):
         """Handle EQ slider changes and apply audio effects.
-        
+
         NOTE: All 7 sliders are EQ (volume is now a separate horizontal slider).
         Settings are NOT auto-saved - user must click Save button.
         """
         try:
             # Get EQ values from all 7 sliders
             eq_values = [slider.value() for slider in self._eq_sliders]
-            
+
             # Apply EQ settings to the player
             self._apply_eq_to_player(eq_values)
-            
+
             # NO AUTO-SAVE - user must click Save button
             print(f"[App] EQ changed: {eq_values} (not saved - click Save button)")
         except Exception as e:
             print(f"[App] Failed to handle EQ change: {e}")
-    
+
     def _apply_eq_to_player(self, eq_values: list):
         """Apply EQ settings to audio playback.
-        
+
         Args:
             eq_values: List of dB values from -12 to +12
         """
         try:
             if not hasattr(self, 'player') or not self.player:
                 return
-            
+
             # If EQ is disabled, send flat EQ (all zeros)
             if not self._eq_enabled:
                 eq_values = [0] * 7
-            
+
             # Convert dB values (-12 to +12) to slider values (0 to 200)
             # where 100 = 0dB (flat)
             # Formula: slider_value = (dB_value + 12) * 200 / 24
@@ -4606,7 +4889,7 @@ Licensed under AGPL v3</p>
                 # Convert to 0-200 range (100 = 0dB)
                 slider_val = 100 + (db_val * 100 / 12)
                 slider_values.append(int(slider_val))
-            
+
             # Send EQ values to player
             if hasattr(self.player, 'set_eq_values'):
                 self.player.set_eq_values(slider_values)
@@ -4614,18 +4897,18 @@ Licensed under AGPL v3</p>
                     print(f"[App] EQ applied to player: {eq_values} dB → {slider_values} slider")
                 else:
                     print(f"[App] EQ disabled - sending flat EQ")
-                
+
         except Exception as e:
             print(f"[App] Failed to apply EQ to player: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def _on_eq_toggle(self, checked: bool):
         """Handle EQ enable/disable toggle."""
         try:
             self._eq_enabled = checked
             self._eq_toggle_btn.setText("ON" if checked else "OFF")
-            
+
             # Apply current EQ settings (will be flat if disabled)
             if hasattr(self, '_eq_sliders'):
                 eq_values = []
@@ -4637,17 +4920,17 @@ Licensed under AGPL v3</p>
                         db_val = raw_val
                     eq_values.append(db_val)
                 self._apply_eq_to_player(eq_values)
-            
+
             print(f"[App] EQ {'enabled' if checked else 'disabled'}")
-            
+
         except Exception as e:
             print(f"[App] Failed to toggle EQ: {e}")
-    
+
     def _on_eq_preset_changed(self, index: int):
         """Handle EQ preset selection."""
         try:
             preset_name = self._eq_preset_combo.currentText()
-            
+
             # Define EQ presets (dB values for 60Hz, 150Hz, 400Hz, 1kHz, 2.4kHz, 6kHz, 15kHz)
             presets = {
                 "Flat (No EQ)": [0, 0, 0, 0, 0, 0, 0],
@@ -4661,9 +4944,9 @@ Licensed under AGPL v3</p>
                 "Vocal Forward": [-2, -1, 2, 3, 2, 0, -1],
                 "Custom": None  # Don't change sliders for Custom
             }
-            
+
             eq_values = presets.get(preset_name)
-            
+
             if eq_values is not None:
                 # Update sliders to match preset
                 for i, db_val in enumerate(eq_values):
@@ -4677,38 +4960,38 @@ Licensed under AGPL v3</p>
                             # QSlider: direct dB value
                             slider_val = db_val
                         slider.setValue(slider_val)
-                        
+
                         # Update label
                         if i < len(self._eq_value_labels):
                             if db_val >= 0:
                                 self._eq_value_labels[i].setText(f"+{db_val}")
                             else:
                                 self._eq_value_labels[i].setText(f"{db_val}")
-                
+
                 # Apply preset immediately
                 self._apply_eq_to_player(eq_values)
                 print(f"[App] Applied EQ preset: {preset_name} → {eq_values}")
             else:
                 print(f"[App] Selected Custom preset - sliders unchanged")
-            
+
         except Exception as e:
             print(f"[App] Failed to apply EQ preset: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def _increment_play_count(self, path: str):
         """Increment play count for a track using the store module."""
         try:
             from . import store
             store.increment_play_count(path)
-            
+
             # Update the model to refresh the play count display
             self._refresh_play_count_display(path)
-            
+
             print(f"[App] Incremented play count for: {Path(path).stem}")
         except Exception as e:
             print(f"[App] Failed to increment play count: {e}")
-    
+
     def _refresh_play_count_display(self, path: str):
         """Refresh the play count display for a specific track."""
         try:
@@ -4719,7 +5002,7 @@ Licensed under AGPL v3</p>
                     from . import store
                     record = store.get_record(path) or {}
                     play_count = record.get('play_count', 0)
-                    
+
                     if row < len(self.model._rows):
                         self.model._rows[row]['play_count'] = play_count
                         # Emit data changed signal to update the display
@@ -4728,7 +5011,7 @@ Licensed under AGPL v3</p>
                     break
         except Exception as e:
             print(f"[App] Failed to refresh play count display: {e}")
-    
+
     def _save_analysis_data(self, path: str, analysis_data: dict):
         """Save analysis data to our EQ store with enhanced metadata."""
         try:
@@ -4739,7 +5022,7 @@ Licensed under AGPL v3</p>
                     data = json.loads(p.read_text())
                 except Exception:
                     data = {}
-            
+
             # Helper function to convert numpy types to native Python types for JSON serialization
             def convert_to_native(obj):
                 """Recursively convert numpy types to native Python types."""
@@ -4753,7 +5036,7 @@ Licensed under AGPL v3</p>
                 elif isinstance(obj, (list, tuple)):
                     return [convert_to_native(item) for item in obj]
                 return obj
-            
+
             # Store both EQ settings and analysis metadata
             existing_track_data = data.get(path, {})
             data[path] = {
@@ -4764,9 +5047,9 @@ Licensed under AGPL v3</p>
                 'play_count': existing_track_data.get('play_count', 0),  # Don't increment here
                 'manual_save': existing_track_data.get('manual_save', False)  # Preserve manual save flag
             }
-            
+
             p.write_text(json.dumps(data, indent=2))
-            
+
         except Exception as e:
             print(f"[App] Failed to save analysis data: {e}")
 
@@ -4791,7 +5074,7 @@ Licensed under AGPL v3</p>
     def _on_media_status_changed(self, status):
         """Handle media status changes, including repeat mode."""
         from PySide6.QtMultimedia import QMediaPlayer
-        
+
         if status == QMediaPlayer.EndOfMedia:
             if self._repeat_enabled:
                 # Repeat current track
@@ -4812,9 +5095,9 @@ Licensed under AGPL v3</p>
         paths = self.model.paths()
         if not paths or self.current_row >= len(paths):
             raise RuntimeError('Invalid current row')
-        
+
         path = paths[self.current_row]
-        
+
         # Get current EQ slider values and convert from BeamSlider (0-100) to dB (-12 to +12)
         eq_sliders = getattr(self, '_eq_sliders', [])
         eq_values = []
@@ -4823,13 +5106,13 @@ Licensed under AGPL v3</p>
             # Convert: 0 -> -12, 50 -> 0, 100 -> +12
             db_val = int(round((slider_val / 100.0) * 24 - 12))
             eq_values.append(db_val)
-        
+
         # Get current volume
         current_volume = self._volume_slider.value() if hasattr(self, '_volume_slider') else 75
-        
+
         # Get current preset name
         current_preset = self._eq_preset_combo.currentText() if hasattr(self, '_eq_preset_combo') else "Custom"
-        
+
         # Load existing data (to preserve analysis results)
         p = self._eq_store_path()
         data = {}
@@ -4838,10 +5121,10 @@ Licensed under AGPL v3</p>
                 data = json.loads(p.read_text())
             except Exception:
                 data = {}
-        
+
         # Get existing track data or create new
         existing_track_data = data.get(path, {})
-        
+
         # Update with current manual settings
         track_data = {
             'eq_settings': eq_values,
@@ -4854,11 +5137,11 @@ Licensed under AGPL v3</p>
             'manual_save': True,  # Flag to indicate user manually saved settings
             'saved_at': str(QDateTime.currentDateTime().toString())
         }
-        
+
         # Update the data and save
         data[path] = track_data
         p.write_text(json.dumps(data, indent=2))
-        
+
         print(f"[App] ✓ Saved EQ and volume for: {Path(path).stem} (EQ dB: {eq_values}, Vol: {current_volume}%)")
         print(f"[App]   File: {p}")
 
@@ -4874,33 +5157,33 @@ Licensed under AGPL v3</p>
                     artist = track_info.get('artist', '')
                     album = track_info.get('album', '')
                     source = track_info.get('source', 'streaming')
-                    
+
                     # Build display: "Title - Artist • Album" or "Title • Album" or just "Title"
                     parts = []
                     if artist:
                         parts.append(f"♪ {title} - {artist}")
                     else:
                         parts.append(f"♪ {title}")
-                    
+
                     if album:
                         parts.append(album)
-                    
+
                     # Add source indicator
                     if source == 'plex':
                         parts.append("Plex")
                     else:
                         parts.append("Streaming")
-                    
+
                     self.metadata_label.setText(" • ".join(parts))
                 else:
                     self.metadata_label.setText("🌐 Streaming • No metadata available")
                 return
-            
+
             file_path = Path(path)
             if not file_path.exists():
                 self.metadata_label.setText("⚠️ File not found")
                 return
-            
+
             # Get file size
             file_size_bytes = file_path.stat().st_size
             if file_size_bytes < 1024:
@@ -4909,22 +5192,22 @@ Licensed under AGPL v3</p>
                 size_str = f"{file_size_bytes / 1024:.1f}KB"
             else:
                 size_str = f"{file_size_bytes / (1024 * 1024):.1f}MB"
-            
+
             # Try to extract audio metadata with mutagen
             try:
                 from mutagen import File as MutagenFile
                 audio = MutagenFile(path)
-                
+
                 if audio is None:
                     # Fallback - just show filename
                     self.metadata_label.setText(f"♪ {file_path.stem} • {file_path.suffix.upper()[1:]} • {size_str}")
                     return
-                
+
                 # Extract track info (title, artist, album)
                 title = None
                 artist = None
                 album = None
-                
+
                 if hasattr(audio, 'tags') and audio.tags:
                     tags = audio.tags
                     # Try common tag names
@@ -4943,59 +5226,59 @@ Licensed under AGPL v3</p>
                             val = tags[key]
                             album = str(val[0]) if isinstance(val, list) else str(val)
                             break
-                
+
                 # Fallback to filename for title
                 if not title:
                     title = file_path.stem
-                
+
                 # Build the NOW PLAYING display: "Title - Artist • Album • FORMAT • details"
                 parts = []
-                
+
                 # Song info first (most important)
                 if artist:
                     parts.append(f"♪ {title} - {artist}")
                 else:
                     parts.append(f"♪ {title}")
-                
+
                 if album:
                     parts.append(album)
-                
+
                 # Technical details
                 format_name = file_path.suffix.upper()[1:]  # .flac -> FLAC
                 sample_rate = getattr(audio.info, 'sample_rate', None)
                 bits_per_sample = getattr(audio.info, 'bits_per_sample', None)
                 bitrate = getattr(audio.info, 'bitrate', None)
                 channels = getattr(audio.info, 'channels', None)
-                
+
                 # Format string
                 tech_parts = [format_name]
-                
+
                 if bits_per_sample:
                     # Lossless format
                     tech_parts.append(f"{sample_rate / 1000:.1f}kHz/{bits_per_sample}bit")
                 elif bitrate:
                     # Lossy format
                     tech_parts.append(f"{bitrate // 1000}kbps")
-                
+
                 if channels == 2:
                     tech_parts.append("Stereo")
                 elif channels == 1:
                     tech_parts.append("Mono")
-                
+
                 tech_parts.append(size_str)
-                
+
                 parts.append(" ".join(tech_parts))
-                
+
                 # Final display text
                 display_text = " • ".join(parts)
                 self.metadata_label.setText(display_text)
                 self.metadata_label.setToolTip(display_text)  # Full text on hover
-                
+
             except Exception as e:
                 # Fallback if mutagen fails
                 self.metadata_label.setText(f"♪ {file_path.stem} • {file_path.suffix.upper()[1:]} • {size_str}")
                 print(f"[Metadata] Could not extract audio info: {e}")
-                
+
         except Exception as e:
             self.metadata_label.setText("⚠️ Error reading metadata")
             print(f"[Metadata] Error: {e}")
@@ -5009,11 +5292,11 @@ Licensed under AGPL v3</p>
             data = json.loads(p.read_text())
         except Exception:
             return None
-        
+
         track_data = data.get(path)
         if not track_data:
             return None
-        
+
         # Handle both old format (just values) and new format (dict with metadata)
         if isinstance(track_data, list):
             # Old format - just EQ values (assume they're in dB)
@@ -5028,7 +5311,7 @@ Licensed under AGPL v3</p>
             return track_data
         else:
             return None
-    
+
     def _store_analysis_for_video(self, video_path: str, analysis_data: dict):
         """Store analysis data for a video file using the original video path as key."""
         try:
@@ -5039,7 +5322,7 @@ Licensed under AGPL v3</p>
                     data = json.loads(p.read_text())
                 except Exception:
                     data = {}
-            
+
             # Store under video file path with analysis from extracted audio
             track_data = {
                 'eq_settings': analysis_data.get('gains_db', [0]*7),
@@ -5049,21 +5332,21 @@ Licensed under AGPL v3</p>
                 'play_count': data.get(video_path, {}).get('play_count', 0),
                 'source_type': 'video'
             }
-            
+
             data[video_path] = track_data
             p.write_text(json.dumps(data, indent=2))
-            
+
             print(f"[App] Stored video analysis for: {Path(video_path).stem}")
-            
+
         except Exception as e:
             print(f"[App] Failed to store video analysis: {e}")
-    
+
     def closeEvent(self, event):
         """Clean up background analysis and save queue state when closing the application."""
         try:
             # Save queue state before closing
             self._save_queue_state()
-            
+
             # Clean up background analysis
             if self._analysis_worker and self._analysis_worker.isRunning():
                 print("[App] Stopping background analysis...")
@@ -5071,7 +5354,7 @@ Licensed under AGPL v3</p>
                 self._analysis_worker.wait(2000)  # Wait up to 2 seconds
         except Exception as e:
             print(f"[App] Error during cleanup: {e}")
-        
+
         event.accept()
 
     def _get_queue_state_file(self):
@@ -5083,7 +5366,7 @@ Licensed under AGPL v3</p>
 
     def _load_panel_states(self):
         """Load saved collapse states for all panels.
-        
+
         Default behavior: All panels open (expanded) on startup.
         This prevents weird UI issues from launching with everything collapsed.
         """
@@ -5096,27 +5379,27 @@ Licensed under AGPL v3</p>
                 self.eq_panel.set_collapsed(False)
             if hasattr(self, 'search_panel'):
                 self.search_panel.set_collapsed(False)
-            
+
             # Set initial stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
-            
+
             print("[App] Initialized panels: all expanded (default)")
         except Exception as e:
             print(f"[App] Failed to load panel states: {e}")
-    
+
     def _update_panel_stretch_factors(self):
         """Update stretch factors so the last visible panel fills remaining space.
-        
+
         The last expanded (visible) panel should have stretch=1 to fill all available space.
         All collapsed panels should have stretch=0 and be completely minimized.
         """
         try:
             from PySide6.QtWidgets import QSizePolicy
             from .collapsible_panel import CollapsiblePanel
-            
+
             if not hasattr(self, '_central_layout'):
                 return
-            
+
             # Get all panels in order
             panels = []
             if hasattr(self, 'queue_panel'):
@@ -5125,21 +5408,21 @@ Licensed under AGPL v3</p>
                 panels.append(self.eq_panel)
             if hasattr(self, 'search_panel'):
                 panels.append(self.search_panel)
-            
+
             # Find the last visible (non-collapsed) panel
             last_visible = None
             for panel in reversed(panels):
                 if panel.isVisible() and not panel.is_collapsed:
                     last_visible = panel
                     break
-            
+
             # Update stretch factors for all panels
             layout = self._central_layout
             for i in range(layout.count()):
                 item = layout.itemAt(i)
                 if item and item.widget() in panels:
                     panel = item.widget()
-                    
+
                     # Collapsed panels: stretch=0, Fixed size policy, minimal height
                     if not panel.isVisible() or panel.is_collapsed:
                         layout.setStretch(i, 0)
@@ -5188,11 +5471,11 @@ Licensed under AGPL v3</p>
                         except Exception:
                             pass
                         panel.updateGeometry()
-            
+
             print(f"[App] Updated panel stretch factors, last visible: {last_visible.title if last_visible else 'none'}")
         except Exception as e:
             print(f"[App] Failed to update panel stretch factors: {e}")
-    
+
     def _save_panel_states(self):
         """Save current collapse states for all panels."""
         try:
@@ -5207,10 +5490,10 @@ Licensed under AGPL v3</p>
             print(f"[App] Saved panel states: {states}")
         except Exception as e:
             print(f"[App] Failed to save panel states: {e}")
-    
+
     def _apply_layout_preset(self, preset: str):
         """Apply a layout preset (workflow mode).
-        
+
         Args:
             preset: One of "queue_eq", "queue_only", "eq_only", "artist_info"
                 - queue_eq: Queue and EQ panels only (default, no artist info)
@@ -5221,7 +5504,7 @@ Licensed under AGPL v3</p>
         try:
             # Remember current preset for stretch logic nuances
             self._current_layout_preset = preset
-            
+
             if preset == "queue_only":
                 # Queue Only
                 self.queue_panel.set_collapsed(False)
@@ -5241,7 +5524,7 @@ Licensed under AGPL v3</p>
                 except Exception:
                     pass
                 print("[App] Applied Queue Only layout")
-                
+
             elif preset == "eq_only":
                 # EQ Only
                 self.queue_panel.set_collapsed(True)
@@ -5260,7 +5543,7 @@ Licensed under AGPL v3</p>
                 except Exception:
                     pass
                 print("[App] Applied EQ Only layout")
-                
+
             elif preset == "artist_info":
                 # Artist Info View - Just the artist info panel at full height
                 self.queue_panel.set_collapsed(True)
@@ -5269,16 +5552,16 @@ Licensed under AGPL v3</p>
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(True)
-                
+
                 # Make artist info panel expand to fill all available space
                 try:
                     self.search_panel.lock_content_height(False)
                     self.search_panel.set_content_stretch(True)
                 except Exception as e:
                     print(f"[App] Error configuring Artist Info layout: {e}")
-                    
+
                 print("[App] Applied Artist Info layout (artist info only)")
-                
+
             elif preset == "queue_eq":
                 # Queue + EQ View - Queue and EQ panels only (no search)
                 self.queue_panel.set_collapsed(False)
@@ -5299,21 +5582,21 @@ Licensed under AGPL v3</p>
                 except Exception:
                     pass
                 print("[App] Applied Queue + EQ layout (no artist info)")
-            
+
             else:
                 # Unknown preset - default to queue_eq
                 print(f"[App] Warning: Unknown layout preset '{preset}', using queue_eq")
                 self._apply_layout_preset("queue_eq")
                 return
-            
+
             # Update stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
             # Snap window height to visible content so there's no extra padding
             QTimer.singleShot(0, self._resize_to_fit_visible_panels)
-            
+
             # Save the panel states
             self._save_panel_states()
-            
+
         except Exception as e:
             print(f"[App] Failed to apply layout preset: {e}")
 
@@ -5330,7 +5613,7 @@ Licensed under AGPL v3</p>
 
     def _resize_to_fit_visible_panels(self):
         """Resize the fixed-height window to fit the toolbar + visible panels + status bar.
-        
+
         Keeps the non-resizable behavior but avoids large empty space when fewer panels are visible
         (e.g., EQ Only or Search & Queue). Width remains unchanged.
         """
@@ -5491,10 +5774,10 @@ Licensed under AGPL v3</p>
             self.setCentralWidget(self._classic_central)
         except Exception as e:
             print(f"[SidecarEQ] Exit Rack Mode failed: {e}")
-    
+
     def _on_layout_preset_changed(self, index: int):
         """Handle layout preset dropdown selection.
-        
+
         Args:
             index: 0=Queue + EQ, 1=Queue Only, 2=EQ Only, 3=Artist Info
         """
@@ -5502,19 +5785,19 @@ Licensed under AGPL v3</p>
         presets = ["queue_eq", "queue_only", "eq_only", "artist_info"]
         if 0 <= index < len(presets):
             self._apply_layout_preset(presets[index])
-    
+
     def _on_panel_toggled(self):
         """Handle panel collapse/expand - save state and update last visible panel stretch."""
         # Save the state
         self._save_panel_states()
-        
+
         # Update stretch factors so last visible panel fills space
         self._update_panel_stretch_factors()
-        
+
         # Refresh panel geometry
         QTimer.singleShot(0, self._resize_to_fit_visible_panels)
         QTimer.singleShot(300, lambda: self._sync_queue_panel_height())
-    
+
     def _save_queue_state(self):
         """Save the current queue state to disk."""
         try:

@@ -8,14 +8,14 @@ import os
 import json
 from . import store
 from .metadata import read_tags
-from .metadata_extractor import extract_comprehensive_metadata
+# Note: extract_comprehensive_metadata imported in extract_metadata_for_row method
 
 # Expanded columns for professional music management
 COLUMNS = [
     "",            # Metadata lookup (globe icon)
     "",            # Play status indicator (radio button)
-    "Title", 
-    "Artist", 
+    "Title",
+    "Artist",
     "Album",
     "Year",
     "Label",
@@ -46,10 +46,10 @@ class QueueModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
-            
+
         row_data = self._rows[index.row()]
         col = index.column()
-        
+
         # Handle different roles
         if role == Qt.DisplayRole:
             # Column 0: Lookup (globe icon - handled by delegate)
@@ -102,11 +102,11 @@ class QueueModel(QAbstractTableModel):
             # Column 14: Play Count
             elif col == 14:
                 return str(row_data.get("play_count", 0))
-        
+
         # UserRole returns the full path (for internal use)
         elif role == Qt.UserRole:
             return row_data.get("path")
-        
+
         # EditRole for editable fields
         elif role == Qt.EditRole:
             if col == 2:  # Title
@@ -123,7 +123,7 @@ class QueueModel(QAbstractTableModel):
                 return row_data.get("producer") or ""
             elif col == 8:  # Rating (return number 0-5)
                 return row_data.get("rating", 0)
-        
+
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -161,24 +161,24 @@ class QueueModel(QAbstractTableModel):
     def flags(self, index):
         default = super().flags(index)
         flags = default | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled
-        
+
         # Make columns 2-8 editable (Title, Artist, Album, Year, Label, Producer, Rating)
         # Columns 0-1 (Lookup, Status) are not editable
         col = index.column()
         if 2 <= col <= 8:
             flags |= Qt.ItemIsEditable
-        
+
         return flags
-    
+
     def setData(self, index, value, role=Qt.EditRole):
         """Allow editing of metadata fields."""
         if not index.isValid() or role != Qt.EditRole:
             return False
-        
+
         row_data = self._rows[index.row()]
         col = index.column()
         changed = False
-        
+
         # Column mapping based on COLUMNS list:
         # 0: Lookup, 1: Status, 2: Title, 3: Artist, 4: Album, 5: Year, 6: Label, 7: Producer, 8: Rating, ...
         if col == 2:  # Title (was 1, now 2 due to Status column)
@@ -206,36 +206,36 @@ class QueueModel(QAbstractTableModel):
                 changed = True
             except (ValueError, TypeError):
                 return False
-        
+
         if changed:
             # Emit dataChanged signal
             self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole])
-            
+
             # Save updated metadata to file tags (if it's a local file)
             path = row_data.get("path", "")
             if path and not path.startswith(('http://', 'https://')):
                 self._save_metadata_to_file(path, row_data)
-            
+
             return True
-        
+
         return False
-    
+
     def _save_metadata_to_file(self, file_path, row_data):
         """Write updated metadata back to the audio file tags."""
         if not MutagenFile or not os.path.exists(file_path):
             return
-        
+
         try:
             audio = MutagenFile(file_path)
             if not audio or not hasattr(audio, 'tags'):
                 return
-            
+
             # Get or create tags
             if audio.tags is None:
                 audio.add_tags()
-            
+
             tags = audio.tags
-            
+
             # Map our fields to appropriate tag names (handles MP3, FLAC, etc.)
             # Title
             title = row_data.get("title")
@@ -246,7 +246,7 @@ class QueueModel(QAbstractTableModel):
                         break
                     except:
                         continue
-            
+
             # Artist
             artist = row_data.get("artist")
             if artist:
@@ -256,7 +256,7 @@ class QueueModel(QAbstractTableModel):
                         break
                     except:
                         continue
-            
+
             # Album
             album = row_data.get("album")
             if album:
@@ -266,7 +266,7 @@ class QueueModel(QAbstractTableModel):
                         break
                     except:
                         continue
-            
+
             # Year/Date
             year = row_data.get("year")
             if year:
@@ -276,41 +276,41 @@ class QueueModel(QAbstractTableModel):
                         break
                     except:
                         continue
-            
+
             # Save changes
             audio.save()
             print(f"[QueueModel] Saved metadata to {Path(file_path).name}")
-            
+
         except Exception as e:
             print(f"[QueueModel] Failed to save metadata to {Path(file_path).name}: {e}")
 
     def supportedDropActions(self):
         return Qt.MoveAction
-    
+
     def mimeTypes(self):
         """Return list of supported MIME types for drag-drop."""
         return ['application/x-qabstractitemmodeldatalist']
-    
+
     def mimeData(self, indexes):
         """Create MIME data for dragged items."""
         mimeData = super().mimeData(indexes)
         return mimeData
-    
+
     def dropMimeData(self, data, action, row, column, parent):
         """Handle drop of MIME data (enables drag-drop reordering)."""
         if action == Qt.IgnoreAction:
             return True
-        
+
         if not data.hasFormat('application/x-qabstractitemmodeldatalist'):
             return False
-        
+
         # Get the source row from the selection (we'll handle this via moveRows)
         # Qt will call moveRows() automatically when this returns True
         return super().dropMimeData(data, action, row, column, parent)
 
     def moveRows(self, sourceParent, sourceRow, count, destinationParent, destinationChild):
         """Move rows to reorder the queue via drag & drop.
-        
+
         destinationChild is the row index where items should be inserted.
         When dropping between rows, Qt gives us the index where the drop indicator appears.
         """
@@ -325,14 +325,14 @@ class QueueModel(QAbstractTableModel):
             if destinationChild < 0 or destinationChild > len(self._rows):
                 print(f"[QueueModel] Invalid destinationChild: {destinationChild} (total: {len(self._rows)})")
                 return False
-            
+
             # If source and destination are the same, no move needed
             if sourceRow == destinationChild:
                 return False
             # If dropping right after the source, also no move needed
             if destinationChild == sourceRow + count:
                 return False
-            
+
             # Calculate the actual destination after accounting for removal
             # When we remove items, indices shift
             if destinationChild > sourceRow:
@@ -341,44 +341,44 @@ class QueueModel(QAbstractTableModel):
             else:
                 # Moving up - destination stays the same
                 actual_dest = destinationChild
-            
+
             # Ensure actual_dest is valid
             if actual_dest < 0 or actual_dest > len(self._rows) - count:
                 print(f"[QueueModel] Invalid actual_dest: {actual_dest}")
                 return False
-            
+
             print(f"[QueueModel] Moving rows: source={sourceRow}, count={count}, dest={destinationChild} -> actual={actual_dest}")
-            
+
             # Signal that we're about to move rows
-            self.beginMoveRows(sourceParent, sourceRow, sourceRow + count - 1, 
+            self.beginMoveRows(sourceParent, sourceRow, sourceRow + count - 1,
                               destinationParent, actual_dest)
-            
+
             # Extract rows to move
             rows_to_move = self._rows[sourceRow:sourceRow + count]
-            
+
             # Remove from original position
             del self._rows[sourceRow:sourceRow + count]
-            
+
             # Insert at destination
             for i, row in enumerate(rows_to_move):
                 self._rows.insert(actual_dest + i, row)
-            
+
             self.endMoveRows()
             print(f"[QueueModel] Successfully moved {count} row(s)")
             return True
-            
+
         except Exception as e:
             print(f"[QueueModel] ERROR in moveRows: {e}")
             import traceback
             traceback.print_exc()
             return False
-    
+
     def sort(self, column, order=Qt.AscendingOrder):
         """Sort the queue by the specified column."""
         self.layoutAboutToBeChanged.emit()
-        
+
         reverse = (order == Qt.DescendingOrder)
-        
+
         if column == 0:  # Title
             self._rows.sort(key=lambda r: (r.get("title") or Path(r["path"]).name).lower(), reverse=reverse)
         elif column == 1:  # Artist
@@ -387,14 +387,14 @@ class QueueModel(QAbstractTableModel):
             self._rows.sort(key=lambda r: (r.get("album") or "").lower(), reverse=reverse)
         elif column == 3:  # Play Count
             self._rows.sort(key=lambda r: r.get("play_count", 0), reverse=reverse)
-        
+
         self.layoutChanged.emit()
 
     # --- Helpers ---
     def add_paths(self, paths):
         # Valid audio and video file extensions
         AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
-        
+
         added = 0
         for p in paths:
             # Don't convert URLs to absolute paths
@@ -402,22 +402,22 @@ class QueueModel(QAbstractTableModel):
                 ap = p  # Keep URL as-is
             else:
                 ap = os.path.abspath(p)  # Convert local paths to absolute
-                
+
                 # Check if file is audio or video (video files will have audio extracted)
                 from .video_extractor import is_video_file
                 file_ext = Path(ap).suffix.lower()
-                
+
                 if file_ext not in AUDIO_EXTS and not is_video_file(ap):
                     print(f"[Warning] Skipping unsupported file: {ap}")
                     continue
-                    
+
             if ap in self._paths_set:
                 continue
             rec = store.get_record(ap) or {}
-            
+
             # Check if this is a video file that needs audio extraction
             is_video = is_video_file(ap) if not ap.startswith(('http://', 'https://')) else False
-            
+
             # Initialize row with comprehensive metadata
             row = {
                 "path": ap,
@@ -437,7 +437,7 @@ class QueueModel(QAbstractTableModel):
                 "bit_depth": None,
                 "duration": None,
             }
-            
+
             # Extract metadata
             if is_video:
                 # For video files, use filename as title and add video indicator
@@ -447,14 +447,20 @@ class QueueModel(QAbstractTableModel):
                 row["album"] = ""
                 row["format"] = Path(ap).suffix.upper()[1:]
             elif not ap.startswith(('http://', 'https://')):
-                # For local audio files, extract comprehensive metadata
-                metadata = extract_comprehensive_metadata(ap)
-                row.update(metadata)  # Merge all extracted metadata into row
+                # For local audio files, use basic filename info initially
+                # Metadata will be loaded asynchronously in the background
+                path_obj = Path(ap)
+                row["title"] = path_obj.stem
+                row["artist"] = "Loading..."
+                row["album"] = ""
+                row["format"] = path_obj.suffix.upper()[1:]
+                # Mark for background metadata extraction
+                row["_needs_metadata"] = True
             else:
                 # For URLs, use basic info
                 row["title"] = Path(ap).stem
                 row["format"] = "Stream"
-            
+
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
             self._paths_set.add(ap)
@@ -462,12 +468,54 @@ class QueueModel(QAbstractTableModel):
             added += 1
         return added
 
+    def extract_metadata_for_row(self, row_index):
+        """Extract metadata for a specific row in the background.
+
+        This should be called from a background thread/worker.
+        Returns the extracted metadata dict.
+        """
+        if row_index < 0 or row_index >= len(self._rows):
+            return None
+
+        row = self._rows[row_index]
+        if not row.get("_needs_metadata"):
+            return None
+
+        path = row.get("path")
+        if not path or path.startswith(('http://', 'https://')):
+            return None
+
+        # Extract metadata (this is the slow part - should be in background)
+        metadata = extract_comprehensive_metadata(path)
+        return metadata
+
+    def update_row_metadata(self, row_index, metadata):
+        """Update a row's metadata (call from main thread after background extraction).
+
+        Args:
+            row_index: Index of row to update
+            metadata: Dict of metadata to merge into the row
+        """
+        if row_index < 0 or row_index >= len(self._rows):
+            return
+
+        row = self._rows[row_index]
+        # Remove the marker
+        row.pop("_needs_metadata", None)
+        # Update with extracted metadata
+        row.update(metadata)
+
+        # Notify views that this row changed
+        start_idx = self.index(row_index, 0)
+        end_idx = self.index(row_index, self.columnCount() - 1)
+        self.dataChanged.emit(start_idx, end_idx)
+
     def add_plex_tracks(self, track_infos):
         """Add Plex tracks with pre-fetched metadata.
-        
+
         Args:
             track_infos: List of dicts with keys: path, title, artist, album, etc.
-        
+
         Returns:
             Number of tracks added
         """
@@ -476,7 +524,7 @@ class QueueModel(QAbstractTableModel):
             path = track_info.get("path")
             if not path or path in self._paths_set:
                 continue
-            
+
             # Use the metadata from Plex
             row = {
                 "path": path,
@@ -498,13 +546,13 @@ class QueueModel(QAbstractTableModel):
                 "sample_rate": None,
                 "bit_depth": None,
             }
-            
+
             self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
             self._rows.append(row)
             self._paths_set.add(path)
             self.endInsertRows()
             added += 1
-        
+
         return added
 
     def paths(self):
@@ -513,7 +561,7 @@ class QueueModel(QAbstractTableModel):
             # Prioritize stream_url for Plex tracks, but ensure we don't return None or empty strings
             stream_url = r.get("stream_url")
             path = r.get("path", "")
-            
+
             if stream_url and stream_url.strip():
                 # Use stream_url for Plex tracks (should contain http/https)
                 result.append(stream_url)
@@ -524,14 +572,14 @@ class QueueModel(QAbstractTableModel):
                 # Fallback - this shouldn't happen but prevents errors
                 result.append("")
                 print(f"[Warning] Empty path for row: {r}")
-        
+
         return result
 
     def remove_rows(self, rows):
         """Remove specified rows from the queue.
-        
+
         If this would empty the queue, automatically loads the welcome track instead.
-        
+
         Args:
             rows: List of row indices to remove
         """
@@ -542,21 +590,21 @@ class QueueModel(QAbstractTableModel):
             self._rows.pop(r)
             self._paths_set.discard(ap)
             self.endRemoveRows()
-        
+
         # If queue is now empty, load the welcome track
         if len(self._rows) == 0:
             self._load_welcome_track()
-    
+
     def _load_welcome_track(self):
         """Load the welcome/introduction track when queue is empty.
-        
+
         Looks for introduction.mp3 in the sidecar_eq package directory.
         If not found, creates a placeholder entry.
         """
         # Get the path to the sidecar_eq package directory
         package_dir = Path(__file__).parent
         intro_path = package_dir / "introduction.mp3"
-        
+
         # If introduction.mp3 doesn't exist yet, try to find any sample audio
         if not intro_path.exists():
             # Look for MLKDream as a fallback (temporary until we create the real intro)
@@ -578,7 +626,7 @@ class QueueModel(QAbstractTableModel):
                 self._rows.append(row)
                 self.endInsertRows()
                 return
-        
+
         # Load the intro track using add_paths
         self.add_paths([str(intro_path)])
 
@@ -607,10 +655,10 @@ class QueueModel(QAbstractTableModel):
                 "version": "1.0",
                 "rows": self._rows.copy()
             }
-            
+
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(queue_data, f, indent=2, ensure_ascii=False)
-            
+
             print(f"[QueueModel] Saved queue with {len(self._rows)} items to {file_path}")
             return True
         except Exception as e:
@@ -628,7 +676,7 @@ class QueueModel(QAbstractTableModel):
 
             with open(file_path, 'r', encoding='utf-8') as f:
                 queue_data = json.load(f)
-            
+
             if not isinstance(queue_data, dict) or 'rows' not in queue_data:
                 print(f"[QueueModel] Invalid queue format in {file_path}")
                 return False
@@ -638,40 +686,40 @@ class QueueModel(QAbstractTableModel):
             old_count = len(self._rows)
             self._rows.clear()
             self._paths_set.clear()
-            
+
             # Load saved rows, validating that files still exist
             loaded_rows = []
             for row in queue_data['rows']:
                 # Ensure row has required keys
                 if not isinstance(row, dict) or 'path' not in row:
                     continue
-                
+
                 # Check if file still exists (skip validation for URLs and Plex streams)
                 path = row.get('path', '')
                 stream_url = row.get('stream_url', '')
                 source = row.get('source', 'local')
-                
+
                 if source == 'local' and path:
                     # For local files, check if they still exist
                     if not os.path.exists(path):
                         print(f"[QueueModel] Skipping missing file: {path}")
                         continue
-                
+
                 # Add valid row
                 self._rows.append(row)
                 self._paths_set.add(path or stream_url)
                 loaded_rows.append(row)
-            
+
             self.endResetModel()
-            
+
             print(f"[QueueModel] Loaded {len(loaded_rows)} items from saved queue (skipped {len(queue_data['rows']) - len(loaded_rows)} missing files)")
-            
+
             # If queue is empty after loading, add the welcome track
             if len(self._rows) == 0:
                 self._load_welcome_track()
-            
+
             return True
-            
+
         except Exception as e:
             print(f"[QueueModel] Failed to load queue: {e}")
             # Reset to empty state on error
@@ -690,3 +738,51 @@ class QueueModel(QAbstractTableModel):
             self._rows.clear()
             self._paths_set.clear()
             self.endResetModel()
+
+    def extract_metadata_for_row(self, row_index):
+        """Extract metadata for a specific row (called from background thread).
+
+        Args:
+            row_index: Index of the row to extract metadata for
+
+        Returns:
+            Dict with metadata or None
+        """
+        if row_index < 0 or row_index >= len(self._rows):
+            return None
+
+        row = self._rows[row_index]
+        path = row.get('path', '')
+
+        # Only extract for local files that need metadata
+        if not row.get('_needs_metadata') or not path or path.startswith(('http://', 'https://')):
+            return None
+
+        # Import here to avoid circular dependencies
+        from .metadata_extractor import extract_comprehensive_metadata
+
+        # This is the slow I/O operation - runs in background thread
+        metadata = extract_comprehensive_metadata(path)
+        return metadata
+
+    def update_row_metadata(self, row_index, metadata):
+        """Update a row with extracted metadata (called from main thread).
+
+        Args:
+            row_index: Index of the row to update
+            metadata: Dict with metadata to apply
+        """
+        if row_index < 0 or row_index >= len(self._rows):
+            return
+
+        row = self._rows[row_index]
+
+        # Update the row with metadata
+        if metadata:
+            row.update(metadata)
+            row['_needs_metadata'] = False  # Mark as completed
+
+            # Notify view that this row changed
+            top_left = self.index(row_index, 0)
+            bottom_right = self.index(row_index, self.columnCount() - 1)
+            self.dataChanged.emit(top_left, bottom_right)
