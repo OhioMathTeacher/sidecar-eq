@@ -544,6 +544,18 @@ class MainWindow(QMainWindow):
             self.playlist_panel.lock_content_height(False)
             central_layout.addWidget(self.playlist_panel, stretch=0)
 
+            # Library Browser panel - created but NOT added to central_layout
+            # It will be shown/hidden by layout presets
+            from .library_browser import LibraryBrowserWidget
+            self.library_browser = LibraryBrowserWidget(
+                library=self.indexer.library if hasattr(self, 'indexer') and self.indexer else None,
+                artist_info_widget=None  # Will create its own info widget
+            )
+            # Connect signals
+            self.library_browser.tracks_selected.connect(self._on_library_tracks_selected)
+            self.library_browser.artist_clicked.connect(self._on_library_artist_clicked)
+            # Note: library_browser is NOT added to central_layout here
+
             # Store central layout for dynamic stretch updates
             self._central_layout = central_layout
 
@@ -969,18 +981,7 @@ class MainWindow(QMainWindow):
         self.play_btn.setShortcut(QKeySequence(Qt.Key_Space))
         tb.addWidget(self.play_btn)
 
-        # Add Songs button (download icon)
-        tb.addSeparator()
-        add_btn = IconButton(
-            "icons/download.svg",
-            "icons/download_hover.svg",
-            "icons/download_pressed.svg",
-            tooltip="Add Songs"
-        )
-        add_btn.clicked.connect(self.on_add_based_on_source)
-        tb.addWidget(add_btn)
-
-        # Trash button
+        # Trash button (remove download button - use File menu instead)
         tb.addSeparator()
         trash_btn = IconButton(
             "icons/trash.svg",
@@ -991,42 +992,17 @@ class MainWindow(QMainWindow):
         trash_btn.clicked.connect(self.on_remove_selected)
         tb.addWidget(trash_btn)
 
-        # Music Directory Selector - Shows current directory, allows selection from recent or browse
-        tb.addSeparator()
+        # Music Directory Selector - HIDDEN (use File → Index Music Folder instead)
+        # Keeping the widget for potential future use, but not adding to toolbar
         from PySide6.QtWidgets import QComboBox
         self.music_dir_combo = QComboBox()
         self.music_dir_combo.setEditable(False)
         self.music_dir_combo.setMinimumWidth(200)
         self.music_dir_combo.setMaximumWidth(400)
-        self.music_dir_combo.setStyleSheet("""
-            QComboBox {
-                color: #b0b0b0;
-                background: #1a1a1a;
-                border: 1px solid #2a2a2a;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 11px;
-            }
-            QComboBox:hover {
-                border: 1px solid #3a3a3a;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 6px solid #808080;
-                width: 0;
-                height: 0;
-                margin-right: 6px;
-            }
-        """)
         self.music_dir_combo.activated.connect(self._on_music_dir_selected)
-        tb.addWidget(self.music_dir_combo)
+        # NOT ADDED TO TOOLBAR: tb.addWidget(self.music_dir_combo)
 
-        # Load recent music directories
+        # Load recent music directories (for internal tracking)
         self._load_recent_music_dirs()
 
         # NOW PLAYING / METADATA DISPLAY - Extended to fill available space
@@ -1069,7 +1045,8 @@ class MainWindow(QMainWindow):
             "Queue + EQ",
             "Queue + Playlists",
             "EQ Only",
-            "Artist Info"
+            "Artist Info",
+            "Library Browser"
         ])
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
         self._layout_preset_combo.setToolTip("Select layout preset")
@@ -1369,6 +1346,23 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             QMessageBox.warning(self, "Save Playlist", f"Failed to save playlist: {e}")
+
+    def _on_library_tracks_selected(self, paths):
+        """Handle tracks selected from library browser - add to queue."""
+        if paths:
+            count = self.model.add_paths(paths)
+            if self.current_row is None and count > 0:
+                self.table.selectRow(0)
+            self.statusBar().showMessage(f"✅ Added {count} track(s) from library", 3000)
+
+    def _on_library_artist_clicked(self, artist_name, album_name):
+        """Handle artist/album clicked in library browser - update artist info pane."""
+        if not artist_name:
+            return
+        
+        # Fetch and display artist metadata in the info pane
+        if hasattr(self, 'metadata_fetcher') and self.metadata_fetcher:
+            self._fetch_artist_metadata(artist_name, album_name)
 
     def _delete_selected_playlist(self):
         """Delete the selected playlist."""
@@ -2908,12 +2902,19 @@ class MainWindow(QMainWindow):
         layout_grp.addAction(act_artist_info)
         m_layout.addAction(act_artist_info)
 
+        act_library = QAction("Library Browser", self)
+        act_library.setCheckable(True)
+        act_library.triggered.connect(lambda: self._apply_layout_preset("library"))
+        layout_grp.addAction(act_library)
+        m_layout.addAction(act_library)
+
         # Store layout actions for later reference
         self._layout_actions = {
             "queue_eq": act_queue_eq,
             "queue_only": act_queue_only,
             "eq_only": act_eq_only,
             "artist_info": act_artist_info,
+            "library": act_library,
         }
 
         m_view.addSeparator()
@@ -5784,17 +5785,44 @@ Licensed under AGPL v3</p>
         except Exception as e:
             print(f"[App] Failed to save panel states: {e}")
 
+    def _restore_normal_panels(self):
+        """Restore normal panel layout when switching away from library view."""
+        try:
+            # Remove library browser from layout
+            if hasattr(self, 'library_browser'):
+                self.library_browser.setParent(None)
+            
+            # Re-add all normal panels to central layout
+            while self._central_layout.count():
+                self._central_layout.takeAt(0)
+            
+            # Add panels back in order
+            self._central_layout.addWidget(self.queue_panel, stretch=0)
+            self._central_layout.addWidget(self.eq_panel, stretch=0)
+            self._central_layout.addWidget(self.search_panel, stretch=0)
+            if hasattr(self, 'playlist_panel'):
+                self._central_layout.addWidget(self.playlist_panel, stretch=0)
+            
+            print("[App] Restored normal panel layout")
+        except Exception as e:
+            print(f"[App] Failed to restore panels: {e}")
+
     def _apply_layout_preset(self, preset: str):
         """Apply a layout preset (workflow mode).
 
         Args:
-            preset: One of "queue_eq", "queue_only", "eq_only", "artist_info"
+            preset: One of "queue_eq", "queue_only", "eq_only", "artist_info", "library"
                 - queue_eq: Queue and EQ panels only (default, no artist info, no playlists)
-                - queue_only: Just the queue panel
-                - eq_only: EQ and Playlists panels
+                - queue_only: Queue + Playlists  
+                - eq_only: Just EQ
                 - artist_info: Artist info panel only (full height)
+                - library: Library browser with optional artist info split view
         """
         try:
+            # If switching away from library view, restore normal panels first
+            if hasattr(self, '_current_layout_preset') and self._current_layout_preset == "library" and preset != "library":
+                self._restore_normal_panels()
+            
             # Remember current preset for stretch logic nuances
             self._current_layout_preset = preset
 
@@ -5869,6 +5897,33 @@ Licensed under AGPL v3</p>
                     print(f"[App] Error configuring Artist Info layout: {e}")
 
                 print("[App] Applied Artist Info layout (artist info only)")
+
+            elif preset == "library":
+                # Library Browser View - Replace central widget with library browser
+                # Hide all panels
+                self.queue_panel.setVisible(False)
+                self.eq_panel.setVisible(False)
+                self.search_panel.setVisible(False)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.setVisible(False)
+                
+                # Clear central layout and add library browser
+                if hasattr(self, 'library_browser'):
+                    # Remove all widgets from central layout
+                    while self._central_layout.count():
+                        item = self._central_layout.takeAt(0)
+                        if item.widget():
+                            item.widget().setParent(None)
+                    
+                    # Add library browser as the only widget
+                    self._central_layout.addWidget(self.library_browser, 1)
+                    self.library_browser.setVisible(True)
+                    
+                    # Update library data if needed
+                    if hasattr(self, 'indexer') and self.indexer:
+                        self.library_browser.set_library(self.indexer.library)
+
+                print("[App] Applied Library Browser layout")
 
             elif preset == "queue_eq":
                 # Queue + EQ View - Queue and EQ panels only (no search, no playlists)
@@ -6091,10 +6146,10 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
 
         Args:
-            index: 0=Queue + EQ, 1=Queue + Playlists, 2=EQ Only, 3=Artist Info
+            index: 0=Queue + EQ, 1=Queue + Playlists, 2=EQ Only, 3=Artist Info, 4=Library Browser
         """
         # Map dropdown indices to preset names
-        presets = ["queue_eq", "queue_only", "eq_only", "artist_info"]
+        presets = ["queue_eq", "queue_only", "eq_only", "artist_info", "library"]
         if 0 <= index < len(presets):
             self._apply_layout_preset(presets[index])
 

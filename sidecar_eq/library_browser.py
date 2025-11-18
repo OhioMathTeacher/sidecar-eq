@@ -107,16 +107,16 @@ class LibraryBrowserWidget(QWidget):
         layout.addWidget(toolbar)
         
         # Main content: splitter for browser + optional info pane
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
         
-        # Left: Tree browser
+        # Top: Tree browser
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name", "Type", "Count"])
         self.tree.setColumnWidth(0, 350)
         self.tree.setColumnWidth(1, 80)
         self.tree.setColumnWidth(2, 60)
         self.tree.itemClicked.connect(self._on_item_clicked)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.setStyleSheet("""
             QTreeWidget {
                 background: #1e1e1e;
@@ -136,7 +136,7 @@ class LibraryBrowserWidget(QWidget):
         """)
         self.splitter.addWidget(self.tree)
         
-        # Right: Artist info pane (initially hidden)
+        # Bottom: Artist info pane (initially hidden)
         if self.artist_info_widget:
             self.artist_info_widget.setVisible(False)
             self.splitter.addWidget(self.artist_info_widget)
@@ -163,7 +163,7 @@ class LibraryBrowserWidget(QWidget):
         
         artists = self.library.artists
         if not artists:
-            self.status_label.setText("⚠️ Library is empty. Add music via File > Add Folder")
+            self.status_label.setText("⚠️ Library is empty. Use File → Index Music Folder to scan your music collection")
             return
         
         # Create artist items
@@ -176,13 +176,13 @@ class LibraryBrowserWidget(QWidget):
             artist_item.setCheckState(0, Qt.CheckState.Unchecked)
             artist_item.setData(0, Qt.UserRole, {"type": "artist", "name": artist.name})
             
-            # Lazy load albums (will expand on double-click)
+            # Lazy load albums (will expand when arrow is clicked)
             artist_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
         
         self.status_label.setText(f"💿 {len(artists)} artists in library")
     
-    def _on_item_double_clicked(self, item, column):
-        """Handle double-click: expand artists to show albums, albums to show tracks."""
+    def _on_item_expanded(self, item):
+        """Handle item expansion: lazy-load albums for artists, tracks for albums."""
         data = item.data(0, Qt.UserRole)
         if not data:
             return
@@ -207,20 +207,20 @@ class LibraryBrowserWidget(QWidget):
                         "album": album.title
                     })
                     album_item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
-                item.setExpanded(True)
         
         elif item_type == "album" and item.childCount() == 0:
             # Lazy load tracks for this album
             artist_name = data.get("artist")
             album_title = data.get("album")
+            print(f"[LibraryBrowser] Loading tracks for {artist_name} - {album_title}")
             artist = self.library.artists.get(artist_name)
             if artist:
                 album = artist.albums.get(album_title)
                 if album:
-                    for song in sorted(album.songs, key=lambda s: (s.track_number or 0, s.title or "")):
+                    print(f"[LibraryBrowser] Found album with {len(album.songs)} songs")
+                    for song in sorted(album.songs, key=lambda s: s.title or ""):
                         track_item = QTreeWidgetItem(item)
-                        track_name = f"{song.track_number}. {song.title}" if song.track_number else song.title
-                        track_item.setText(0, track_name or "Unknown Track")
+                        track_item.setText(0, song.title or "Unknown Track")
                         track_item.setText(1, "Track")
                         track_item.setText(2, "")
                         track_item.setCheckState(0, Qt.CheckState.Unchecked)
@@ -228,8 +228,12 @@ class LibraryBrowserWidget(QWidget):
                             "type": "track",
                             "path": song.path
                         })
-                    item.setExpanded(True)
-    
+                    print(f"[LibraryBrowser] Added {item.childCount()} tracks to album item")
+                else:
+                    print(f"[LibraryBrowser] Album not found: {album_title}")
+            else:
+                print(f"[LibraryBrowser] Artist not found: {artist_name}")
+
     def _on_item_clicked(self, item, column):
         """Handle single click: emit artist_clicked signal for info pane update."""
         data = item.data(0, Qt.UserRole)
@@ -240,10 +244,12 @@ class LibraryBrowserWidget(QWidget):
         
         if item_type == "artist":
             artist_name = data.get("name")
+            print(f"[LibraryBrowser] Artist clicked: {artist_name}")
             self.artist_clicked.emit(artist_name, "")  # Empty album means show artist info
         elif item_type == "album":
             artist_name = data.get("artist")
             album_title = data.get("album")
+            print(f"[LibraryBrowser] Album clicked: {artist_name} - {album_title}")
             self.artist_clicked.emit(artist_name, album_title)
     
     def _on_search(self, text):
@@ -311,8 +317,8 @@ class LibraryBrowserWidget(QWidget):
         
         if checked:
             self.toggle_info_btn.setText("Hide Info")
-            # Set splitter sizes: 60% browser, 40% info
-            total_width = self.splitter.width()
-            self.splitter.setSizes([int(total_width * 0.6), int(total_width * 0.4)])
+            # Set splitter sizes: 60% browser (top), 40% info (bottom)
+            total_height = self.splitter.height()
+            self.splitter.setSizes([int(total_height * 0.6), int(total_height * 0.4)])
         else:
             self.toggle_info_btn.setText("Show Info")
