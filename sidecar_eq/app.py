@@ -1065,8 +1065,8 @@ class MainWindow(QMainWindow):
         self._layout_preset_combo = QComboBox()
         self._layout_preset_combo.addItems([
             "Queue + EQ",
-            "Queue Only",
-            "EQ + Playlists",
+            "Queue + Playlists",
+            "EQ Only",
             "Artist Info"
         ])
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
@@ -1380,31 +1380,19 @@ class MainWindow(QMainWindow):
     def _create_artist_info_display(self):
         """Create the Now Playing artist info display widget with rich metadata."""
         try:
-            from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget, QHBoxLayout, QPushButton
+            from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton
             from PySide6.QtCore import Qt, QSize
             from PySide6.QtGui import QPixmap
 
-            # Main scrollable container (parent to self to avoid floating windows)
-            scroll = QScrollArea(self)
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.NoFrame)
-            scroll.setStyleSheet("""
-                QScrollArea {
-                    background: transparent;
-                    border: none;
-                }
-            """)
-            
-            # Set size policy to allow shrinking to content size
+            # Main container widget (no scroll - window will resize to fit)
             from PySide6.QtWidgets import QSizePolicy
-            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-
-            container = QWidget(scroll)
+            container = QWidget(self)
             container.setStyleSheet("""
                 QWidget {
                     background: #1e1e1e;
                 }
             """)
+            container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
             layout = QVBoxLayout()
             layout.setSpacing(15)
@@ -1482,9 +1470,15 @@ class MainWindow(QMainWindow):
                     border-radius: 6px;
                 }
             """)
-            # Set placeholder image
-            placeholder_pixmap = QPixmap(200, 200)
-            placeholder_pixmap.fill(Qt.transparent)
+            # Set placeholder image - use sidecar icon
+            from pathlib import Path
+            icon_path = Path(__file__).parent.parent / "icons" / "sidecarnote.png"
+            if icon_path.exists():
+                placeholder_pixmap = QPixmap(str(icon_path))
+                placeholder_pixmap = placeholder_pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                placeholder_pixmap = QPixmap(200, 200)
+                placeholder_pixmap.fill(Qt.transparent)
             self.album_art_label.setPixmap(placeholder_pixmap)
             content_layout.addWidget(self.album_art_label, 0, Qt.AlignTop)
 
@@ -1661,19 +1655,18 @@ class MainWindow(QMainWindow):
             # layout.addStretch()
 
             container.setLayout(layout)
-            scroll.setWidget(container)
-            scroll.setVisible(False)  # Hidden until a track plays
+            container.setVisible(False)  # Hidden until a track plays
             
             # Store container reference for size calculations
             self._artist_info_container = container
 
-            return scroll
+            return container
         except Exception as e:
             print(f"ERROR in _create_artist_info_display: {e}")
             import traceback
             traceback.print_exc()
             # Return a dummy widget so the app doesn't crash
-            dummy = QScrollArea(self)
+            dummy = QWidget(self)
             return dummy
 
     def _set_bio_font_size(self, size):
@@ -1791,8 +1784,7 @@ class MainWindow(QMainWindow):
                 # No metadata fetcher or unknown artist - clear extra fields
                 self.artist_bio_label.setText("")
                 self._clear_related_artists()
-                self.album_art_label.clear()
-                self.album_art_label.setText("No artwork")
+                self._set_placeholder_artwork()
                 self.tracklist_container.setVisible(False)
 
             # Show the display
@@ -1891,8 +1883,7 @@ class MainWindow(QMainWindow):
                 print(f"[App] Loading artwork: {artwork_url}")
                 self._load_album_artwork(artwork_url)
             else:
-                self.album_art_label.clear()
-                self.album_art_label.setText("No artwork" if album else "No album")
+                self._set_placeholder_artwork()
 
             # Update tracklist - schedule on main thread's event loop
             if tracks:
@@ -2342,17 +2333,27 @@ class MainWindow(QMainWindow):
             pixmap.loadFromData(response.content)
 
             if not pixmap.isNull():
-                # Scale to fit 180x180 while maintaining aspect ratio
-                scaled_pixmap = pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                # Scale to fit 200x200 (matching album_art_label size) while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.album_art_label.setPixmap(scaled_pixmap)
             else:
-                self.album_art_label.clear()
-                self.album_art_label.setText("Invalid image")
+                self._set_placeholder_artwork()
 
         except Exception as e:
             print(f"[App] Failed to load album artwork: {e}")
+            self._set_placeholder_artwork()
+
+    def _set_placeholder_artwork(self):
+        """Set the sidecar icon as placeholder artwork."""
+        from pathlib import Path
+        icon_path = Path(__file__).parent.parent / "icons" / "sidecarnote.png"
+        if icon_path.exists():
+            placeholder_pixmap = QPixmap(str(icon_path))
+            placeholder_pixmap = placeholder_pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.album_art_label.setPixmap(placeholder_pixmap)
+        else:
             self.album_art_label.clear()
-            self.album_art_label.setText("Load failed")
+            self.album_art_label.setText("No artwork")
 
     def _build_side_panel(self):
         """
@@ -2864,13 +2865,13 @@ class MainWindow(QMainWindow):
         layout_grp.addAction(act_queue_eq)
         m_layout.addAction(act_queue_eq)
 
-        act_queue_only = QAction("Queue Only", self)
+        act_queue_only = QAction("Queue + Playlists", self)
         act_queue_only.setCheckable(True)
         act_queue_only.triggered.connect(lambda: self._apply_layout_preset("queue_only"))
         layout_grp.addAction(act_queue_only)
         m_layout.addAction(act_queue_only)
 
-        act_eq_only = QAction("EQ + Playlists", self)
+        act_eq_only = QAction("EQ Only", self)
         act_eq_only.setCheckable(True)
         act_eq_only.triggered.connect(lambda: self._apply_layout_preset("eq_only"))
         layout_grp.addAction(act_eq_only)
@@ -5773,18 +5774,18 @@ Licensed under AGPL v3</p>
             self._current_layout_preset = preset
 
             if preset == "queue_only":
-                # Queue Only
+                # Queue + Playlists
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(True)
                 if hasattr(self, 'playlist_panel'):
-                    self.playlist_panel.set_collapsed(True)
+                    self.playlist_panel.set_collapsed(False)
                 # Hide other panel headers entirely in this preset
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(False)
                 if hasattr(self, 'playlist_panel'):
-                    self.playlist_panel.setVisible(False)
+                    self.playlist_panel.setVisible(True)
                 # Queue should be allowed to expand fully
                 try:
                     self.queue_panel.lock_content_height(False)
@@ -5794,30 +5795,30 @@ Licensed under AGPL v3</p>
                         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 except Exception:
                     pass
-                print("[App] Applied Queue Only layout")
+                print("[App] Applied Queue + Playlists layout")
 
             elif preset == "eq_only":
-                # EQ + Playlists
+                # EQ Only
                 self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(False)
                 self.search_panel.set_collapsed(True)
                 if hasattr(self, 'playlist_panel'):
-                    self.playlist_panel.set_collapsed(False)
+                    self.playlist_panel.set_collapsed(True)
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(True)
                 self.search_panel.setVisible(False)
                 if hasattr(self, 'playlist_panel'):
-                    self.playlist_panel.setVisible(True)
+                    self.playlist_panel.setVisible(False)
                 # Keep EQ sized-to-content to avoid overly tall sliders
                 try:
                     self.eq_panel.lock_content_height(True)
                     self.eq_panel.set_content_stretch(False)
-                    # Force the central layout to align to top
+                    # Reset alignment to default
                     if hasattr(self, '_central_layout'):
-                        self._central_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
                 except Exception:
                     pass
-                print("[App] Applied EQ + Playlists layout")
+                print("[App] Applied EQ Only layout")
 
             elif preset == "artist_info":
                 # Artist Info View - Just the artist info panel at full height
@@ -5836,9 +5837,9 @@ Licensed under AGPL v3</p>
                 try:
                     self.search_panel.lock_content_height(True)
                     self.search_panel.set_content_stretch(False)
-                    # Force the central layout to align to top
+                    # Reset alignment to default (like queue_eq layout) instead of AlignTop
                     if hasattr(self, '_central_layout'):
-                        self._central_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+                        self._central_layout.setAlignment(Qt.AlignmentFlag(0))
                 except Exception as e:
                     print(f"[App] Error configuring Artist Info layout: {e}")
 
@@ -5973,8 +5974,8 @@ Licensed under AGPL v3</p>
         }
         for module_id, title in [
             ("mix", "Queue + EQ"),
-            ("queue", "Queue Only"),
-            ("eq", "EQ + Playlists"),
+            ("queue", "Queue + Playlists"),
+            ("eq", "EQ Only"),
             ("search", "Artist Info"),
         ]:
             self._rack_view.add_module(module_id, title)
@@ -6065,7 +6066,7 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
 
         Args:
-            index: 0=Queue + EQ, 1=Queue Only, 2=EQ + Playlists, 3=Artist Info
+            index: 0=Queue + EQ, 1=Queue + Playlists, 2=EQ Only, 3=Artist Info
         """
         # Map dropdown indices to preset names
         presets = ["queue_eq", "queue_only", "eq_only", "artist_info"]
