@@ -82,15 +82,25 @@ Sidecar EQ is evolving from an intelligent music player into a **hybrid DAW/Musi
 ### v1.3.0 📚 IN PROGRESS
 **"Library & Discovery"**
 
-- 💾 **Queue-as-Playlist-Editor** 🔨 ACTIVE
+- 📁 **Library Browser Panel** 🔨 ACTIVE
+  - Tree view: Artists > Albums > Tracks (like iTunes/Plex)
+  - Checkboxes to add songs to queue
+  - Split view mode:
+    - Browser Only - Full width tree for fast playlist building
+    - Browser + Info - Split pane with artist info on right
+  - Click artist → shows bio/discography in info pane
+  - Uses indexed library (already exists from indexer.py)
+  - **Estimate**: 2-3 days
+
+- 💾 **Queue-as-Playlist-Editor** ✅ COMPLETE
   - ✅ Track active playlist being edited
   - ✅ Load playlist replaces queue (not appends)
   - ✅ File dialogs open directly in playlists folder
-  - 🔨 Auto-save changes to active playlist
-  - 🔨 Visual indicator showing which playlist is active
-  - 🔨 "Save As..." to create new playlist from queue
-  - 🔨 "New Playlist" button to clear and start fresh
-  - **Vision**: Edit playlists like a document editor
+  - ✅ Auto-save changes to active playlist
+  - ✅ Queue saved as current.json (replaces queue_state.json)
+  - 🔜 Visual indicator showing which playlist is active
+  - 🔜 "Save As..." to create new playlist from queue
+  - 🔜 "New Playlist" button to clear and start fresh
 
 - 📄 **Individual .sidecar Files** 🎯 NEXT PRIORITY
   - **Current**: All settings in one `~/.sidecar_eq_eqs.json` file
