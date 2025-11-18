@@ -8,7 +8,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
 APP_NAME="Sidecar EQ"
-VERSION="2.1.0"
+VERSION="2.2.0"
 DIST_DIR="dist"
 
 # Colors for output

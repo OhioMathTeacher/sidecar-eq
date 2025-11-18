@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 APP = ['sidecar_eq/app.py']
 APP_NAME = 'Sidecar EQ'
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 BUNDLE_ID = 'com.ohiomathteacher.sidecar-eq'
 
 DATA_FILES = [

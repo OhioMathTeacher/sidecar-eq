@@ -535,6 +535,13 @@ class MainWindow(QMainWindow):
 
             central_layout.addWidget(self.search_panel, stretch=0)  # Dynamic stretch applied later
 
+            # Panel 4: Playlists (collapsible, accordion style)
+            self.playlist_panel = CollapsiblePanel("Playlists")
+            playlist_widget = self._create_playlist_browser()
+            self.playlist_panel.set_content(playlist_widget)
+            self.playlist_panel.lock_content_height(False)
+            central_layout.addWidget(self.playlist_panel, stretch=0)
+
             # Store central layout for dynamic stretch updates
             self._central_layout = central_layout
 
@@ -892,6 +899,8 @@ class MainWindow(QMainWindow):
             self.eq_panel.collapsed.connect(lambda _: self._on_panel_toggled())
         if hasattr(self, 'search_panel'):
             self.search_panel.collapsed.connect(lambda _: self._on_panel_toggled())
+        if hasattr(self, 'playlist_panel'):
+            self.playlist_panel.collapsed.connect(lambda _: self._on_panel_toggled())
 
     def _on_waveform_seek(self, ms: int):
         """Handle seeking via waveform click. Start playback if stopped.
@@ -1057,7 +1066,7 @@ class MainWindow(QMainWindow):
         self._layout_preset_combo.addItems([
             "Queue + EQ",
             "Queue Only",
-            "EQ Only",
+            "EQ + Playlists",
             "Artist Info"
         ])
         self._layout_preset_combo.setCurrentIndex(0)  # Default to Queue + EQ
@@ -1123,6 +1132,251 @@ class MainWindow(QMainWindow):
 
 
 
+    def _create_playlist_browser(self):
+        """Create the playlist browser widget."""
+        from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout, QListWidgetItem, QMessageBox
+        from PySide6.QtCore import Qt
+        
+        container = QWidget()
+        container.setStyleSheet("QWidget { background: #1e1e1e; }")
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Playlist list
+        self.playlist_list = QListWidget()
+        self.playlist_list.setStyleSheet("""
+            QListWidget {
+                background: #2a2a2a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 5px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-radius: 3px;
+                margin: 2px 0;
+            }
+            QListWidget::item:hover {
+                background: #3a3a3a;
+            }
+            QListWidget::item:selected {
+                background: #4a9eff;
+                color: white;
+            }
+        """)
+        self.playlist_list.itemDoubleClicked.connect(self._on_playlist_double_click)
+        layout.addWidget(self.playlist_list)
+        
+        # Button row
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(8)
+        
+        # Save current queue as playlist button
+        save_btn = QPushButton("💾 Save Current Queue")
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background: #4a9eff;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #5aa9ff; }
+            QPushButton:pressed { background: #3a8eef; }
+        """)
+        save_btn.clicked.connect(self._save_current_queue_as_playlist)
+        button_layout.addWidget(save_btn)
+        
+        # Refresh button
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background: #3a3a3a; }
+            QPushButton:pressed { background: #1a1a1a; }
+        """)
+        refresh_btn.clicked.connect(self._refresh_playlist_list)
+        button_layout.addWidget(refresh_btn)
+        
+        # Delete button
+        delete_btn = QPushButton("🗑️ Delete")
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background: #ff4444;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background: #ff5555; }
+            QPushButton:pressed { background: #dd3333; }
+        """)
+        delete_btn.clicked.connect(self._delete_selected_playlist)
+        button_layout.addWidget(delete_btn)
+        
+        layout.addLayout(button_layout)
+        container.setLayout(layout)
+        
+        # Initial load of playlists
+        self._refresh_playlist_list()
+        
+        return container
+
+    def _get_playlists_dir(self):
+        """Get the playlists directory, creating it if needed."""
+        playlists_dir = Path.home() / '.sidecar_eq' / 'playlists'
+        playlists_dir.mkdir(parents=True, exist_ok=True)
+        return playlists_dir
+
+    def _refresh_playlist_list(self):
+        """Refresh the playlist list from disk."""
+        try:
+            self.playlist_list.clear()
+            playlists_dir = self._get_playlists_dir()
+            
+            # Find all .json playlist files
+            playlist_files = sorted(playlists_dir.glob('*.json'))
+            
+            if not playlist_files:
+                item = QListWidgetItem("📁 No playlists yet")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make it non-selectable
+                self.playlist_list.addItem(item)
+                return
+            
+            for playlist_file in playlist_files:
+                # Load playlist to get track count
+                try:
+                    data = json.loads(playlist_file.read_text())
+                    paths = data.get('paths', [])
+                    track_count = len(paths)
+                    
+                    # Format: playlist name (X tracks)
+                    name = playlist_file.stem
+                    display_text = f"🎵 {name} ({track_count} track{'s' if track_count != 1 else ''})"
+                    
+                    item = QListWidgetItem(display_text)
+                    item.setData(Qt.ItemDataRole.UserRole, str(playlist_file))  # Store full path
+                    self.playlist_list.addItem(item)
+                except Exception as e:
+                    print(f"[Playlist] Failed to read {playlist_file.name}: {e}")
+                    
+            print(f"[Playlist] Loaded {len(playlist_files)} playlist(s)")
+            
+        except Exception as e:
+            print(f"[Playlist] Failed to refresh playlist list: {e}")
+
+    def _on_playlist_double_click(self, item):
+        """Load playlist when double-clicked."""
+        from PySide6.QtWidgets import QMessageBox
+        
+        playlist_path = item.data(Qt.ItemDataRole.UserRole)
+        if not playlist_path:
+            return
+        
+        try:
+            # Load the playlist
+            paths = playlist.load_json(playlist_path)
+            if paths:
+                count = self.model.add_paths(paths)
+                if self.current_row is None and count > 0:
+                    self.table.selectRow(0)
+                
+                playlist_name = Path(playlist_path).stem
+                self.statusBar().showMessage(f"✅ Loaded playlist '{playlist_name}' ({count} tracks)", 3000)
+                print(f"[Playlist] Loaded '{playlist_name}' with {count} tracks")
+            else:
+                QMessageBox.information(self, "Load Playlist", "No tracks found in playlist.")
+        except Exception as e:
+            QMessageBox.warning(self, "Load Playlist", f"Failed to load playlist: {e}")
+
+    def _save_current_queue_as_playlist(self):
+        """Save the current queue as a new playlist."""
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        
+        # Get playlist name from user
+        name, ok = QInputDialog.getText(
+            self,
+            "Save Playlist",
+            "Enter playlist name:",
+            text="My Playlist"
+        )
+        
+        if not ok or not name.strip():
+            return
+        
+        try:
+            # Sanitize filename
+            safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
+            if not safe_name:
+                QMessageBox.warning(self, "Save Playlist", "Invalid playlist name.")
+                return
+            
+            # Create playlist file
+            playlists_dir = self._get_playlists_dir()
+            playlist_path = playlists_dir / f"{safe_name}.json"
+            
+            # Save current queue
+            paths = self.model.paths()
+            if not paths:
+                QMessageBox.information(self, "Save Playlist", "Queue is empty. Nothing to save.")
+                return
+            
+            playlist.save_json(paths, str(playlist_path))
+            
+            self.statusBar().showMessage(f"✅ Saved playlist '{safe_name}' ({len(paths)} tracks)", 3000)
+            print(f"[Playlist] Saved '{safe_name}' with {len(paths)} tracks to {playlist_path}")
+            
+            # Refresh the list
+            self._refresh_playlist_list()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Save Playlist", f"Failed to save playlist: {e}")
+
+    def _delete_selected_playlist(self):
+        """Delete the selected playlist."""
+        from PySide6.QtWidgets import QMessageBox
+        
+        current_item = self.playlist_list.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "Delete Playlist", "Please select a playlist to delete.")
+            return
+        
+        playlist_path = current_item.data(Qt.ItemDataRole.UserRole)
+        if not playlist_path:
+            return
+        
+        # Confirm deletion
+        playlist_name = Path(playlist_path).stem
+        reply = QMessageBox.question(
+            self,
+            "Delete Playlist",
+            f"Are you sure you want to delete '{playlist_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                Path(playlist_path).unlink()
+                self.statusBar().showMessage(f"🗑️ Deleted playlist '{playlist_name}'", 3000)
+                print(f"[Playlist] Deleted '{playlist_name}'")
+                self._refresh_playlist_list()
+            except Exception as e:
+                QMessageBox.warning(self, "Delete Playlist", f"Failed to delete playlist: {e}")
+
     def _create_artist_info_display(self):
         """Create the Now Playing artist info display widget with rich metadata."""
         try:
@@ -1140,6 +1394,10 @@ class MainWindow(QMainWindow):
                     border: none;
                 }
             """)
+            
+            # Set size policy to allow shrinking to content size
+            from PySide6.QtWidgets import QSizePolicy
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
             container = QWidget(scroll)
             container.setStyleSheet("""
@@ -1399,12 +1657,15 @@ class MainWindow(QMainWindow):
 
             layout.addLayout(content_layout)
 
-            # Add stretch to push content to top
-            layout.addStretch()
+            # Don't add stretch - let layout size naturally to content
+            # layout.addStretch()
 
             container.setLayout(layout)
             scroll.setWidget(container)
             scroll.setVisible(False)  # Hidden until a track plays
+            
+            # Store container reference for size calculations
+            self._artist_info_container = container
 
             return scroll
         except Exception as e:
@@ -1487,6 +1748,8 @@ class MainWindow(QMainWindow):
         Args:
             path: Path to the track file or URL
         """
+        from PySide6.QtCore import QTimer
+        
         if not hasattr(self, 'artist_info_widget') or not self.artist_info_widget:
             return
 
@@ -1534,6 +1797,10 @@ class MainWindow(QMainWindow):
 
             # Show the display
             self.artist_info_widget.setVisible(True)
+            
+            # Trigger window resize if in Artist Info layout mode
+            if hasattr(self, '_current_layout_preset') and self._current_layout_preset == "artist_info":
+                QTimer.singleShot(100, self._resize_to_fit_visible_panels)
 
         except Exception as e:
             print(f"[App] Failed to update artist info display: {e}")
@@ -2603,7 +2870,7 @@ class MainWindow(QMainWindow):
         layout_grp.addAction(act_queue_only)
         m_layout.addAction(act_queue_only)
 
-        act_eq_only = QAction("EQ Only", self)
+        act_eq_only = QAction("EQ + Playlists", self)
         act_eq_only.setCheckable(True)
         act_eq_only.triggered.connect(lambda: self._apply_layout_preset("eq_only"))
         layout_grp.addAction(act_eq_only)
@@ -2676,12 +2943,6 @@ class MainWindow(QMainWindow):
         self._led_meters_action.setChecked(True)  # On by default
         self._led_meters_action.triggered.connect(self._toggle_led_meters_from_menu)
         m_view.addAction(self._led_meters_action)
-
-        # Now Playing shortcut (Cmd+F / Ctrl+F)
-        act_show_now_playing = QAction("Show Now Playing Panel", self)
-        act_show_now_playing.setShortcut(QKeySequence.Find)
-        act_show_now_playing.triggered.connect(self._show_artist_info_panel)
-        m_view.addAction(act_show_now_playing)
 
         # Help menu
         m_help = mb.addMenu("Help")
@@ -5379,6 +5640,8 @@ Licensed under AGPL v3</p>
                 self.eq_panel.set_collapsed(False)
             if hasattr(self, 'search_panel'):
                 self.search_panel.set_collapsed(False)
+            if hasattr(self, 'playlist_panel'):
+                self.playlist_panel.set_collapsed(False)
 
             # Set initial stretch factors so last visible panel fills space
             self._update_panel_stretch_factors()
@@ -5408,6 +5671,8 @@ Licensed under AGPL v3</p>
                 panels.append(self.eq_panel)
             if hasattr(self, 'search_panel'):
                 panels.append(self.search_panel)
+            if hasattr(self, 'playlist_panel'):
+                panels.append(self.playlist_panel)
 
             # Find the last visible (non-collapsed) panel
             last_visible = None
@@ -5486,6 +5751,8 @@ Licensed under AGPL v3</p>
                 states['eq'] = self.eq_panel.is_collapsed
             if hasattr(self, 'search_panel'):
                 states['search'] = self.search_panel.is_collapsed
+            if hasattr(self, 'playlist_panel'):
+                states['playlist'] = self.playlist_panel.is_collapsed
             store.set_record("panel_states", states)
             print(f"[App] Saved panel states: {states}")
         except Exception as e:
@@ -5496,9 +5763,9 @@ Licensed under AGPL v3</p>
 
         Args:
             preset: One of "queue_eq", "queue_only", "eq_only", "artist_info"
-                - queue_eq: Queue and EQ panels only (default, no artist info)
+                - queue_eq: Queue and EQ panels only (default, no artist info, no playlists)
                 - queue_only: Just the queue panel
-                - eq_only: Just the EQ panel
+                - eq_only: EQ and Playlists panels
                 - artist_info: Artist info panel only (full height)
         """
         try:
@@ -5510,10 +5777,14 @@ Licensed under AGPL v3</p>
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(True)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.set_collapsed(True)
                 # Hide other panel headers entirely in this preset
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(False)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.setVisible(False)
                 # Queue should be allowed to expand fully
                 try:
                     self.queue_panel.lock_content_height(False)
@@ -5526,13 +5797,17 @@ Licensed under AGPL v3</p>
                 print("[App] Applied Queue Only layout")
 
             elif preset == "eq_only":
-                # EQ Only
+                # EQ + Playlists
                 self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(False)
                 self.search_panel.set_collapsed(True)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.set_collapsed(False)
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(True)
                 self.search_panel.setVisible(False)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.setVisible(True)
                 # Keep EQ sized-to-content to avoid overly tall sliders
                 try:
                     self.eq_panel.lock_content_height(True)
@@ -5542,34 +5817,45 @@ Licensed under AGPL v3</p>
                         self._central_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                 except Exception:
                     pass
-                print("[App] Applied EQ Only layout")
+                print("[App] Applied EQ + Playlists layout")
 
             elif preset == "artist_info":
                 # Artist Info View - Just the artist info panel at full height
                 self.queue_panel.set_collapsed(True)
                 self.eq_panel.set_collapsed(True)
                 self.search_panel.set_collapsed(False)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.set_collapsed(True)
                 self.queue_panel.setVisible(False)
                 self.eq_panel.setVisible(False)
                 self.search_panel.setVisible(True)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.setVisible(False)
 
-                # Make artist info panel expand to fill all available space
+                # Make artist info panel size to content (like EQ panel)
                 try:
-                    self.search_panel.lock_content_height(False)
-                    self.search_panel.set_content_stretch(True)
+                    self.search_panel.lock_content_height(True)
+                    self.search_panel.set_content_stretch(False)
+                    # Force the central layout to align to top
+                    if hasattr(self, '_central_layout'):
+                        self._central_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                 except Exception as e:
                     print(f"[App] Error configuring Artist Info layout: {e}")
 
                 print("[App] Applied Artist Info layout (artist info only)")
 
             elif preset == "queue_eq":
-                # Queue + EQ View - Queue and EQ panels only (no search)
+                # Queue + EQ View - Queue and EQ panels only (no search, no playlists)
                 self.queue_panel.set_collapsed(False)
                 self.eq_panel.set_collapsed(False)
                 self.search_panel.set_collapsed(True)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.set_collapsed(True)
                 self.queue_panel.setVisible(True)
                 self.eq_panel.setVisible(True)
                 self.search_panel.setVisible(False)
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.setVisible(False)
                 try:
                     # Panels size to content
                     self.queue_panel.lock_content_height(True)
@@ -5688,7 +5974,7 @@ Licensed under AGPL v3</p>
         for module_id, title in [
             ("mix", "Queue + EQ"),
             ("queue", "Queue Only"),
-            ("eq", "EQ Only"),
+            ("eq", "EQ + Playlists"),
             ("search", "Artist Info"),
         ]:
             self._rack_view.add_module(module_id, title)
@@ -5779,7 +6065,7 @@ Licensed under AGPL v3</p>
         """Handle layout preset dropdown selection.
 
         Args:
-            index: 0=Queue + EQ, 1=Queue Only, 2=EQ Only, 3=Artist Info
+            index: 0=Queue + EQ, 1=Queue Only, 2=EQ + Playlists, 3=Artist Info
         """
         # Map dropdown indices to preset names
         presets = ["queue_eq", "queue_only", "eq_only", "artist_info"]
