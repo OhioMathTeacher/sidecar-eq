@@ -396,6 +396,7 @@ class MainWindow(QMainWindow):
         # Model / table
         try:
             self.model = QueueModel()
+            self.active_playlist_path = None  # Track currently loaded playlist for auto-save
             self.table = QueueTableView()
             self.table.setModel(self.model)
             self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -505,6 +506,7 @@ class MainWindow(QMainWindow):
                         self.model.dataChanged,
                     ):
                         signal.connect(self._sync_queue_panel_height)
+                        signal.connect(self._auto_save_active_playlist)  # Auto-save playlist on changes
             except Exception:
                 pass
             central_widget = QWidget()
@@ -1287,20 +1289,43 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            # Load the playlist
+            # Load the playlist (replaces current queue)
             paths = playlist.load_json(playlist_path)
             if paths:
+                # Clear queue first, then add new tracks
+                self.model.clear()
                 count = self.model.add_paths(paths)
                 if self.current_row is None and count > 0:
                     self.table.selectRow(0)
                 
+                # Set as active playlist for auto-save
+                self.active_playlist_path = playlist_path
+                
                 playlist_name = Path(playlist_path).stem
                 self.statusBar().showMessage(f"✅ Loaded playlist '{playlist_name}' ({count} tracks)", 3000)
-                print(f"[Playlist] Loaded '{playlist_name}' with {count} tracks")
+                print(f"[Playlist] Loaded '{playlist_name}' with {count} tracks - now active for editing")
             else:
                 QMessageBox.information(self, "Load Playlist", "No tracks found in playlist.")
         except Exception as e:
             QMessageBox.warning(self, "Load Playlist", f"Failed to load playlist: {e}")
+
+    def _auto_save_active_playlist(self):
+        """Auto-save changes to the currently active playlist (if any)."""
+        if not self.active_playlist_path:
+            return  # No active playlist to save
+        
+        try:
+            # Save current queue to active playlist
+            paths = self.model.paths()
+            if paths:
+                playlist.save_json(paths, str(self.active_playlist_path))
+                playlist_name = Path(self.active_playlist_path).stem
+                print(f"[Playlist] Auto-saved changes to '{playlist_name}' ({len(paths)} tracks)")
+            else:
+                # Queue is empty - don't save, just note it
+                print(f"[Playlist] Queue empty, skipping auto-save")
+        except Exception as e:
+            print(f"[Playlist] Auto-save failed: {e}")
 
     def _save_current_queue_as_playlist(self):
         """Save the current queue as a new playlist."""
@@ -4549,14 +4574,16 @@ Licensed under AGPL v3</p>
         print(f"[App] Refreshed metadata for {updated_count}/{len(self.model._rows)} tracks")
 
     def on_save_playlist(self):
-        out, _ = QFileDialog.getSaveFileName(self, "Save Playlist (JSON)", "", "JSON (*.json)")
+        playlists_dir = str(self._get_playlists_dir())
+        out, _ = QFileDialog.getSaveFileName(self, "Save Playlist (JSON)", playlists_dir, "JSON (*.json)")
         if not out:
             return
         playlist.save_json(self.model.paths(), out)
         self.statusBar().showMessage(f"Saved playlist to {out}")
 
     def on_load_playlist(self):
-        inp, _ = QFileDialog.getOpenFileName(self, "Load Playlist (JSON or M3U)", "", "Playlists (*.json *.m3u *.m3u8)")
+        playlists_dir = str(self._get_playlists_dir())
+        inp, _ = QFileDialog.getOpenFileName(self, "Load Playlist (JSON or M3U)", playlists_dir, "Playlists (*.json *.m3u *.m3u8)")
         if not inp:
             return
         suffix = Path(inp).suffix.lower()
@@ -5620,11 +5647,9 @@ Licensed under AGPL v3</p>
         event.accept()
 
     def _get_queue_state_file(self):
-        """Get the path to the queue state file."""
-        home = Path.home()
-        sidecar_dir = home / ".sidecar_eq"
-        sidecar_dir.mkdir(exist_ok=True)
-        return sidecar_dir / "queue_state.json"
+        """Get the path to current.json (the active queue/playlist)."""
+        playlists_dir = self._get_playlists_dir()
+        return playlists_dir / "current.json"
 
     def _load_panel_states(self):
         """Load saved collapse states for all panels.
@@ -6095,11 +6120,14 @@ Licensed under AGPL v3</p>
             print(f"[App] Failed to save queue state: {e}")
 
     def _load_queue_state(self):
-        """Load the saved queue state from disk."""
+        """Load the saved queue state from current.json and set as active playlist."""
         try:
             if self.model:
                 queue_file = self._get_queue_state_file()
                 self.model.load_queue_state(queue_file)
+                # Set current.json as the active playlist for auto-save
+                self.active_playlist_path = str(queue_file)
+                print(f"[App] Loaded current.json as active playlist")
         except Exception as e:
             print(f"[App] Failed to load queue state: {e}")
 

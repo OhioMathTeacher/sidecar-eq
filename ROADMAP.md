@@ -79,8 +79,39 @@ Sidecar EQ is evolving from an intelligent music player into a **hybrid DAW/Musi
 
 **Target**: Late November 2025
 
-### v1.3.0 📚 PLANNED
+### v1.3.0 📚 IN PROGRESS
 **"Library & Discovery"**
+
+- 💾 **Queue-as-Playlist-Editor** 🔨 ACTIVE
+  - ✅ Track active playlist being edited
+  - ✅ Load playlist replaces queue (not appends)
+  - ✅ File dialogs open directly in playlists folder
+  - 🔨 Auto-save changes to active playlist
+  - 🔨 Visual indicator showing which playlist is active
+  - 🔨 "Save As..." to create new playlist from queue
+  - 🔨 "New Playlist" button to clear and start fresh
+  - **Vision**: Edit playlists like a document editor
+
+- 📄 **Individual .sidecar Files** 🎯 NEXT PRIORITY
+  - **Current**: All settings in one `~/.sidecar_eq_eqs.json` file
+  - **Goal**: One `.sidecar` file next to each audio file
+  - **Benefits**:
+    - Settings travel with the file if moved/copied
+    - Shareable - send your custom mix to friends
+    - Human-readable JSON format
+    - Version controllable (Git-friendly)
+    - Works offline, no centralized DB needed
+  - **Contents**:
+    - Per-track EQ settings (7-band gains)
+    - Volume preference
+    - Play count, last played timestamp
+    - Star rating
+    - Custom metadata overrides
+    - Artwork URL cache
+    - Analysis data (LUFS, tempo, etc.)
+  - **Format**: `song.mp3` → `song.mp3.sidecar`
+  - **Estimate**: 1-2 weeks
+  - **Migration**: Auto-migrate from centralized file on first run
 
 - 🔍 **Enhanced Search**
   - Fuzzy search across all metadata
@@ -93,11 +124,6 @@ Sidecar EQ is evolving from an intelligent music player into a **hybrid DAW/Musi
   - Multi-select operations (Cmd/Ctrl+Click)
   - Direct file drag-in from Finder/Explorer
   - Batch operations (analyze, reset EQ, delete)
-
-- 💾 **Playlist Enhancements**
-  - M3U8 export with Sidecar metadata
-  - Human-editable playlist format
-  - Playlist sharing and import
 
 **Target**: December 2025
 
