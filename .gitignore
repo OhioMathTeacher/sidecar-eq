@@ -216,3 +216,4 @@ icons/.DS_Store
 .DS_Store
 icons/.DS_Store
 >>>>>>> 1429ed0 (Ignore macOS .DS_Store)
+dist_dir/
